@@ -16,6 +16,9 @@ def fresh_db(tmp_path, monkeypatch):
     llm.set_provider(None)
     comms.set_transport(None)
     comms.OutboxTransport.delivered.clear()
+    from wwos import api
+
+    api._login_attempts.clear()
     yield url
     llm.set_provider(None)
     comms.set_transport(None)

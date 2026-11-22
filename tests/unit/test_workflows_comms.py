@@ -149,6 +149,9 @@ def test_email_delivery_is_exactly_once_and_failures_recorded(tenant):
         msg = s.get(OutboundMessage, mid)
         assert msg.status == "queued" and "smtp down" in msg.last_error and msg.attempts == 1
     comms.set_transport(None)
+    assert comms.dispatch() == 0  # still inside the retry backoff window
+    with system_session() as s:
+        s.execute(update(OutboundMessage).values(updated_at=utcnow() - timedelta(minutes=5)))
     assert comms.dispatch() == 1
     assert comms.dispatch() == 0
     with tenant_session(tid) as s:

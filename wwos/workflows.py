@@ -267,6 +267,16 @@ def claim_next(now=None, tenant_id: str | None = None) -> tuple[str, str, str] |
         if tenant_id:
             q = q.where(Task.tenant_id == tenant_id)
         for task_id, owner, status in s.execute(q).all():
+            if status == "running":
+                # Lease expired: the previous attempt overran or its worker died. Count that as a
+                # failed attempt so a task that always overruns is dead-lettered, not reclaimed forever.
+                dead = s.execute(update(Task).where(Task.id == task_id, Task.status == "running",
+                                                    Task.attempts >= cfg.task_max_attempts)
+                                 .values(status="dead", lease_until=None, claim_token=None,
+                                         last_error="lease expired on the final attempt (task overran or worker died)"))
+                if dead.rowcount == 1:
+                    s.commit()
+                    continue
             token = new_id()
             res = s.execute(
                 update(Task).where(Task.id == task_id, Task.status == status)

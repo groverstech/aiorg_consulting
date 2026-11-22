@@ -56,6 +56,9 @@ class Settings:
     admin_token: str = field(default_factory=lambda: _env("WWOS_ADMIN_TOKEN", ""))
     # Set true behind TLS so the dashboard session cookie is only sent over HTTPS.
     cookie_secure: bool = field(default_factory=lambda: _env_bool("WWOS_COOKIE_SECURE", False))
+    # Public origin users reach the dashboard at, e.g. "https://ops.whitewaters.example". Used for
+    # cross-site request checks behind a TLS proxy. Empty = compare the Origin host to the Host header.
+    public_origin: str = field(default_factory=lambda: _env("WWOS_PUBLIC_ORIGIN", "").rstrip("/"))
 
 
 def get_settings() -> Settings:

@@ -77,7 +77,12 @@ def principal(request: Request) -> Principal:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         raw = auth[7:].strip()
-    p = _lookup_key(raw) or _web_principal(request)
+    p = _lookup_key(raw)
+    if p is None:
+        p = _web_principal(request)
+        # Cookie-authenticated writes must come from our own pages (defence in depth beyond SameSite).
+        if p is not None and request.method not in ("GET", "HEAD", "OPTIONS") and not _same_origin(request):
+            raise HTTPException(status_code=403, detail="cross-site request refused")
     if p is None:
         raise HTTPException(status_code=401, detail="invalid or missing API key")
     return p
@@ -454,11 +459,36 @@ SESSION_HOURS = 8
 
 
 def _same_origin(request: Request) -> bool:
-    """Reject cross-site form posts (login CSRF etc.). Browsers send Origin on POST."""
+    """Reject cross-site form posts (login CSRF etc.). Browsers send Origin on POST.
+
+    Behind a TLS-terminating proxy the app sees http while the browser says https, so compare to
+    WWOS_PUBLIC_ORIGIN when configured, otherwise compare hosts only."""
+    from urllib.parse import urlsplit
+
+    from .config import get_settings
+
     origin = request.headers.get("origin")
     if origin is None:
         return True  # non-browser clients
-    return origin.rstrip("/") == f"{request.url.scheme}://{request.url.netloc}"
+    origin = origin.rstrip("/")
+    public = get_settings().public_origin
+    if public:
+        return origin == public
+    return urlsplit(origin).netloc == request.headers.get("host", request.url.netloc)
+
+
+_login_attempts: dict[str, list[float]] = {}
+LOGIN_LIMIT_PER_MINUTE = 10
+
+
+def _login_rate_limited(client: str) -> bool:
+    import time
+
+    now = time.monotonic()
+    recent = [t for t in _login_attempts.get(client, []) if now - t < 60]
+    recent.append(now)
+    _login_attempts[client] = recent
+    return len(recent) > LOGIN_LIMIT_PER_MINUTE
 
 
 def _web_principal(request: Request) -> Principal | None:
@@ -499,7 +529,12 @@ def login(request: Request, api_key: str = Form(...)):
 
     if not _same_origin(request):
         raise HTTPException(status_code=403, detail="cross-site request refused")
+    if _login_rate_limited(request.client.host if request.client else "unknown"):
+        raise HTTPException(status_code=429, detail="too many login attempts; wait a minute")
+    from sqlalchemy import delete
+
     with db.system_session() as s:
+        s.execute(delete(WebSession).where(WebSession.expires_at < utcnow()))  # prune
         key = s.scalars(select(ApiKey).where(ApiKey.key_hash == hash_key(api_key), ApiKey.active.is_(True))).first()
         if key is None:
             return RedirectResponse("/login?error=Invalid+key", status_code=303)
@@ -517,7 +552,7 @@ def logout(request: Request):
     from sqlalchemy import delete
 
     raw = request.cookies.get("wwos_session")
-    if raw and _same_origin(request):
+    if raw:  # always revoke server-side, whoever triggered the logout
         with db.system_session() as s:
             s.execute(delete(WebSession).where(WebSession.token_hash == hash_key(raw)))
     resp = RedirectResponse("/login", status_code=303)

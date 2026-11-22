@@ -50,6 +50,8 @@ def _money(value: Any) -> Decimal:
         d = Decimal(str(value))
     except InvalidOperation as e:
         raise DocumentError(f"invalid amount {value!r}") from e
+    if not d.is_finite():
+        raise DocumentError(f"invalid amount {value!r}")
     if d < 0:
         raise DocumentError("amounts cannot be negative")
     return d.quantize(Decimal("0.01"))

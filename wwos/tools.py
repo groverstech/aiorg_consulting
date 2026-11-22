@@ -91,7 +91,24 @@ def validate_args(name: str, args: Any) -> dict:
             raise ToolArgumentError(f"argument {key} has the wrong type")
         if not isinstance(value, allowed):
             raise ToolArgumentError(f"argument {key} has the wrong type")
+    amount_field = AMOUNT_FIELDS.get(name)
+    if amount_field and args.get(amount_field) is not None:
+        positive_amount(args[amount_field], amount_field)
     return args
+
+
+def positive_amount(value: Any, what: str = "amount") -> Decimal:
+    try:
+        d = Decimal(str(value))
+    except Exception as e:  # noqa: BLE001
+        raise ToolArgumentError(f"{what} must be a number") from e
+    if not d.is_finite() or d <= 0:
+        raise ToolArgumentError(f"{what} must be a positive, finite number")
+    return d
+
+
+AMOUNT_FIELDS = {"finance.transfer_funds": "amount", "budget.request_increase": "new_monthly_budget_usd",
+                 "agents.provision": "monthly_budget_usd", "agents.revise": "monthly_budget_usd"}
 
 
 def api_name(name: str) -> str:
@@ -310,6 +327,7 @@ def _agents_replace(ctx: ToolContext, agent_id: str) -> dict:
 
 
 MAX_DELEGATION_DEPTH = 3
+MAX_DELEGATIONS_PER_RUN = 5
 
 
 @tool("tasks.delegate", "Assign work to another agent; it runs asynchronously.",
@@ -325,6 +343,10 @@ def _delegate(ctx: ToolContext, agent_id: str, instruction: str, idempotency_key
     if target.can_provision_agents and not (ctx.agent and ctx.agent.can_provision_agents):
         # Prevents laundering authority: only provisioning-capable agents (or the owner) can task them.
         raise PermissionError("only the owner or a provisioning-capable agent can assign work to this agent")
+    if ctx.trace is not None:
+        made = sum(1 for c in ctx.trace.tool_calls if c["tool"] == "tasks.delegate" and not c["error"])
+        if made >= MAX_DELEGATIONS_PER_RUN:
+            raise ValueError(f"at most {MAX_DELEGATIONS_PER_RUN} delegations per run")
     depth = ctx.depth + 1
     if depth > MAX_DELEGATION_DEPTH:
         raise ValueError(f"delegation chain too deep (max {MAX_DELEGATION_DEPTH})")

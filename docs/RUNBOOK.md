@@ -22,7 +22,8 @@ With no configuration, the system runs on SQLite (`var/wwos.db`), the offline mo
 2. `docker compose -f deploy/docker-compose.yml up -d --build`
 3. `docker compose -f deploy/docker-compose.yml exec api wwos create-tenant "White Waters Consulting Group" --budget 500`
 4. Put a TLS-terminating reverse proxy (Caddy, nginx or a cloud load balancer) in front of
-   port 8000 and set `WWOS_COOKIE_SECURE=true` so the dashboard session cookie is HTTPS-only.
+   port 8000. Set `WWOS_COOKIE_SECURE=true` (HTTPS-only session cookie), `WWOS_PUBLIC_ORIGIN`
+   to the public URL, and `FORWARDED_ALLOW_IPS` to the proxy's address.
 5. Check: `curl https://<host>/health` shows `"status":"ok"`; then `wwos qa` passes inside the api container.
 
 Any container platform works (Fly.io, Render, Cloud Run, ECS, a VM). Run one `api` service and
@@ -46,6 +47,8 @@ one `worker` service against managed PostgreSQL; the worker is safe to scale hor
 | `WWOS_TASK_MAX_ATTEMPTS` | `4` | Retries before dead-lettering |
 | `WWOS_TASK_LEASE_SECONDS` | `900` | Worker lease length (claim tokens prevent double commits) |
 | `WWOS_COOKIE_SECURE` | `false` | Set `true` behind TLS |
+| `WWOS_PUBLIC_ORIGIN` | (empty) | Public URL of the dashboard, e.g. `https://ops.example.com`; used for cross-site request checks |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | uvicorn: IPs of the reverse proxy whose `X-Forwarded-*` headers are trusted |
 | `WWOS_ADMIN_TOKEN` | (empty) | Enables `GET /health/details` with header `X-Admin-Token` |
 
 ## Routine operations

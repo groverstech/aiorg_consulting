@@ -292,3 +292,105 @@ def test_provisioning_agent_auto_suspension_goes_to_owner_not_tech(tenant, scrip
         assert s.get(Agent, cid).status == "suspended"
         assert not s.scalars(select(Task).where(Task.idempotency_key.like("recover:%"))).all()
 
+
+
+# ---- Second verification round
+def test_task_that_always_overruns_its_lease_is_dead_lettered(tenant):
+    tid, _ = tenant
+    with tenant_session(tid) as s:
+        workflows.enqueue(s, kind="workflow.lead_intake", idempotency_key="overrun", payload=LEAD, workflow_id="w")
+    claims = 0
+    for _ in range(10):
+        if workflows.claim_next() is None:
+            break
+        claims += 1
+        with system_session() as s:
+            s.execute(update(Task).values(lease_until=utcnow() - timedelta(seconds=1)))
+    with tenant_session(tid) as s:
+        t = s.scalars(select(Task)).one()
+        assert t.status == "dead" and "lease expired" in t.last_error
+    assert claims == 4
+
+
+def test_origin_check_behind_tls_proxy(tenant, monkeypatch):
+    _, key = tenant
+    with TestClient(app) as c:
+        # Proxy terminates TLS: browser origin is https, the app sees http on the same host.
+        r = c.post("/login", data={"api_key": key}, headers={"origin": "https://testserver"},
+                   follow_redirects=False)
+        assert r.status_code == 303
+    monkeypatch.setenv("WWOS_PUBLIC_ORIGIN", "https://ops.example.com")
+    with TestClient(app) as c:
+        ok = c.post("/login", data={"api_key": key}, headers={"origin": "https://ops.example.com"},
+                    follow_redirects=False)
+        bad = c.post("/login", data={"api_key": key}, headers={"origin": "https://testserver"},
+                     follow_redirects=False)
+        assert ok.status_code == 303 and bad.status_code == 403
+
+
+def test_logout_revokes_session_and_cookie_writes_need_origin(tenant):
+    _, key = tenant
+    with TestClient(app) as c:
+        c.post("/login", data={"api_key": key}, follow_redirects=False)
+        assert c.get("/api/deals").status_code == 200
+        r = c.post("/api/contacts", json={"email": "x@y.com", "first_name": "X"},
+                   headers={"origin": "https://evil.example"})
+        assert r.status_code == 403
+        cookie = c.cookies.get("wwos_session")
+        c.post("/logout", headers={"origin": "https://evil.example"}, follow_redirects=False)
+        c.cookies.set("wwos_session", cookie)
+        assert c.get("/api/deals").status_code == 401
+
+
+def test_login_rate_limited(tenant):
+    with TestClient(app) as c:
+        codes = [c.post("/login", data={"api_key": "wrong"}, follow_redirects=False).status_code for _ in range(12)]
+        assert codes[-1] == 429 and codes[0] == 303
+
+
+@pytest.mark.parametrize("amount", ["NaN", "-1e9", "0", "Infinity", "abc"])
+def test_amounts_must_be_finite_and_positive(tenant, amount):
+    tid, key = tenant
+    with tenant_session(tid) as s:
+        out, err = execute_tool(ctx(s, tid, "finance"), "finance.transfer_funds",
+                                {"amount": amount, "currency": "USD", "payee": "X"})
+        assert err and s.scalars(select(ApprovalRequest)).all() == []
+    with TestClient(app) as c:
+        r = c.post("/api/documents", headers={"Authorization": f"Bearer {key}"}, json={
+            "kind": "invoice", "title": "t", "data": {"client_name": "A", "invoice_number": "1", "currency": "USD",
+                                                     "due_days": 30, "line_items": [{"description": "d",
+                                                                                     "unit_price": amount}]}})
+        assert r.status_code == 400 if amount != "0" else r.status_code == 201
+
+
+def test_email_retries_back_off(tenant):
+    tid, _ = tenant
+
+    class Boom:
+        def send(self, **kw):
+            raise ConnectionError("down")
+
+    with tenant_session(tid) as s:
+        m, _ = comms.draft_email(s, idempotency_key="b", to="a@b.com", subject="s", body="b")
+        comms.request_send(s, m.id)
+    comms.set_transport(Boom())
+    for _ in range(5):
+        comms.dispatch()
+    with tenant_session(tid) as s:
+        assert s.get(type(m), m.id).attempts == 1  # later attempts wait for the backoff window
+
+
+def test_delegation_breadth_limited(tenant):
+    from wwos.agents.runtime import RunTrace
+
+    tid, _ = tenant
+    with tenant_session(tid) as s:
+        ops = ctx(s, tid, "operations")
+        ops.trace = RunTrace()
+        sales = find_agent(s, role="sales")
+        results = []
+        for i in range(7):
+            out, err = execute_tool(ops, "tasks.delegate", {"agent_id": sales.id, "instruction": f"job {i}"}, ops.trace)
+            ops.trace.tool_calls.append({"tool": "tasks.delegate", "error": err})
+            results.append(err)
+        assert results == [False] * 5 + [True] * 2

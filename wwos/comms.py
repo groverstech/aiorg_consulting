@@ -110,6 +110,7 @@ def request_send(s: Session, message_id: str) -> OutboundMessage:
 
 MAX_SEND_ATTEMPTS = 3
 SENDING_TIMEOUT = timedelta(minutes=10)
+RETRY_BACKOFF = timedelta(seconds=60)
 
 
 def dispatch(limit: int = 50, tenant_id: str | None = None) -> int:
@@ -122,10 +123,17 @@ def dispatch(limit: int = 50, tenant_id: str | None = None) -> int:
         s.execute(update(OutboundMessage).where(OutboundMessage.status == "sending",
                                                 OutboundMessage.updated_at < now - SENDING_TIMEOUT)
                   .values(status="unknown", last_error="delivery outcome unknown (worker stopped mid-send)"))
-        q = select(OutboundMessage.id).where(OutboundMessage.status == "queued").limit(limit)
+        q = select(OutboundMessage.id, OutboundMessage.attempts, OutboundMessage.updated_at).where(
+            OutboundMessage.status == "queued").limit(limit)
         if tenant_id:
             q = q.where(OutboundMessage.tenant_id == tenant_id)
-        ids = [i for (i,) in s.execute(q).all()]
+        ids = []
+        for mid, attempts, updated in s.execute(q).all():
+            if attempts and updated is not None:
+                updated = updated if updated.tzinfo else updated.replace(tzinfo=now.tzinfo)
+                if now - updated < RETRY_BACKOFF * (2 ** (attempts - 1)):
+                    continue  # exponential backoff between delivery attempts
+            ids.append(mid)
     for mid in ids:
         with system_session() as s:
             claimed = s.execute(update(OutboundMessage).where(OutboundMessage.id == mid,
