@@ -51,8 +51,11 @@ class Settings:
     smtp_password: str = field(default_factory=lambda: _env("WWOS_SMTP_PASSWORD", ""))
     smtp_from: str = field(default_factory=lambda: _env("WWOS_SMTP_FROM", ""))
     task_max_attempts: int = field(default_factory=lambda: int(_env("WWOS_TASK_MAX_ATTEMPTS", "4")))
-    task_lease_seconds: int = field(default_factory=lambda: int(_env("WWOS_TASK_LEASE_SECONDS", "300")))
+    task_lease_seconds: int = field(default_factory=lambda: int(_env("WWOS_TASK_LEASE_SECONDS", "900")))
+    # Grants access to /health/details (cross-tenant queue counts). Empty = endpoint disabled.
     admin_token: str = field(default_factory=lambda: _env("WWOS_ADMIN_TOKEN", ""))
+    # Set true behind TLS so the dashboard session cookie is only sent over HTTPS.
+    cookie_secure: bool = field(default_factory=lambda: _env_bool("WWOS_COOKIE_SECURE", False))
 
 
 def get_settings() -> Settings:

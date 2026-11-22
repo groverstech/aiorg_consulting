@@ -22,7 +22,7 @@ from .. import budget
 from ..llm import get_provider
 from ..models import Agent, ApprovalRequest, Department, Tenant
 from ..policy import PermissionDenied, approval_category, audit, check_tool_permission
-from ..tools import TOOLS, ToolContext, anthropic_tool_defs, from_api_name
+from ..tools import TOOLS, ToolArgumentError, ToolContext, anthropic_tool_defs, from_api_name, validate_args
 
 MAX_TURNS = 8
 
@@ -75,11 +75,13 @@ def execute_tool(ctx: ToolContext, name: str, args: dict, trace: RunTrace | None
             raise PermissionDenied(f"unknown tool {name}")
         if agent is not None:
             check_tool_permission(agent, name)
+        # Strict schema check BEFORE the approval gate, so an approved request can always execute and
+        # no hidden keyword argument can ever reach a handler.
+        args = validate_args(name, args)
         category = approval_category(name, args)
         if category and agent is not None:
             req = ApprovalRequest(category=category, action=name, params=args, requested_by=agent.name,
-                                  reason=args.get("justification", "") if isinstance(args, dict) else "",
-                                  task_id=ctx.task_id)
+                                  reason=str(args.get("justification", "")), task_id=ctx.task_id)
             s.add(req)
             s.flush()
             audit(s, agent.name, "approval.requested", req.id, tool=name, category=category)
@@ -93,7 +95,7 @@ def execute_tool(ctx: ToolContext, name: str, args: dict, trace: RunTrace | None
     except PermissionDenied as e:
         audit(s, ctx.actor, "tool.denied", name, error=str(e))
         return {"error": f"permission denied: {e}"}, True
-    except TypeError as e:  # bad arguments from the model
+    except (ToolArgumentError, TypeError) as e:  # bad arguments from the model
         return {"error": f"invalid arguments: {e}"}, True
     except Exception as e:  # noqa: BLE001 - surfaced to the model as a tool error
         return {"error": f"{type(e).__name__}: {e}"}, True
@@ -106,7 +108,7 @@ def _safe(args: dict) -> dict:
 
 def run_agent_prompt(s: Session, tenant: Tenant, agent: Agent, prompt: str, *, max_tokens: int = 4096,
                      allow_tools: bool = True, task_id: str | None = None,
-                     trace: RunTrace | None = None) -> str:
+                     trace: RunTrace | None = None, depth: int = 0) -> str:
     if agent.status not in ("active", "testing"):
         raise PermissionDenied(f"agent {agent.name} is {agent.status}")
     trace = trace if trace is not None else RunTrace()
@@ -114,13 +116,14 @@ def run_agent_prompt(s: Session, tenant: Tenant, agent: Agent, prompt: str, *, m
     system = system_prompt(s, agent, tenant)
     tool_defs = anthropic_tool_defs(agent.tools) if allow_tools else []
     messages: list[dict] = [{"role": "user", "content": prompt}]
-    ctx = ToolContext(session=s, tenant=tenant, agent=agent, task_id=task_id)
+    ctx = ToolContext(session=s, tenant=tenant, agent=agent, task_id=task_id, trace=trace, depth=depth)
     final_text = ""
     for _turn in range(MAX_TURNS):
         prompt_chars = len(system) + len(json.dumps(messages, default=str)) + len(json.dumps(tool_defs))
         estimate = budget.worst_case_estimate(agent.model, prompt_chars, max_tokens)
         # Unpersisted spend from this run (and any parent run sharing the trace) counts too.
-        budget.ensure_can_spend(s, tenant, agent, estimate + pending_spend(trace, agent.id))
+        budget.ensure_can_spend(s, tenant, agent, estimate, agent_pending=pending_spend(trace, agent.id),
+                                org_pending=pending_spend(trace))
         result = provider.complete(model=agent.model, system=system, messages=messages, tools=tool_defs,
                                    max_tokens=max_tokens)
         trace.spend.append(SpendRecord(agent.id, task_id, _price_model(agent.model, result.model),
@@ -151,7 +154,11 @@ def persist_spend(s: Session, trace: RunTrace) -> None:
     """Write not-yet-persisted spend to the ledger. Callers own when this happens so that
     spend is never lost to a rolled-back savepoint or transaction."""
     for rec in trace.spend[trace.persisted:]:
-        budget.record(s, agent_id=rec.agent_id, task_id=rec.task_id, model=rec.model,
+        # The agent may have been created inside a transaction that was rolled back (e.g. the
+        # acceptance test of an agent whose provisioning failed). The money was still spent, so
+        # it is recorded against the organisation without the agent link.
+        agent_id = rec.agent_id if rec.agent_id and s.get(Agent, rec.agent_id) is not None else None
+        budget.record(s, agent_id=agent_id, task_id=rec.task_id, model=rec.model,
                       input_tokens=rec.input_tokens, output_tokens=rec.output_tokens)
     trace.persisted = len(trace.spend)
 

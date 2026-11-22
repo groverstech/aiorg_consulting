@@ -65,14 +65,16 @@ def allocated_to_agents(session: Session, exclude_agent_id: str | None = None) -
     return Decimal(str(session.execute(q).scalar_one()))
 
 
-def ensure_can_spend(session: Session, tenant: Tenant, agent: Agent, estimate_usd: Decimal) -> None:
-    agent_spent = spent_this_month(session, agent.id)
+def ensure_can_spend(session: Session, tenant: Tenant, agent: Agent, estimate_usd: Decimal,
+                     agent_pending: Decimal = Decimal("0"), org_pending: Decimal = Decimal("0")) -> None:
+    """``*_pending`` is spend already incurred in the current run but not yet in the ledger."""
+    agent_spent = spent_this_month(session, agent.id) + agent_pending
     if agent_spent + estimate_usd > agent.monthly_budget_usd:
         raise BudgetExceeded(
             f"agent {agent.name} budget ${agent.monthly_budget_usd} would be exceeded "
             f"(spent ${agent_spent:.4f}, call estimate ${estimate_usd:.4f})"
         )
-    org_spent = spent_this_month(session)
+    org_spent = spent_this_month(session) + org_pending
     if org_spent + estimate_usd > tenant.monthly_budget_usd:
         raise BudgetExceeded(
             f"organisation budget ${tenant.monthly_budget_usd} would be exceeded "

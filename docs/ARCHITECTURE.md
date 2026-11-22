@@ -39,7 +39,8 @@ consulting firm, inside hard limits set by the owner.
 | `tools.py` | The agent tool catalogue (CRM, docs, comms, finance, legal, budget, agent management, delegation). |
 | `workflows.py` | Queue, worker, retry/lease/dead-letter, self-healing, lead→proposal workflow. |
 | `approvals.py` | Owner approval queue; approved actions execute as idempotent tasks. |
-| `crm.py`, `documents.py`, `comms.py` | Business services with validation; Jinja2 documents; transactional email outbox. |
+| `crm.py`, `documents.py`, `comms.py` | Business services with validation; Jinja2 documents; email outbox (`request_send` queues, `dispatch` delivers at-most-once). |
+| `schedule.py` | Recurring jobs (daily CEO review, daily operations check, hourly QA scan), exactly once per period. |
 | `qa.py` | Independent read-only invariant scanner (`wwos qa`). |
 | `backup.py` | Verified online backup / restore (SQLite); Postgres via `pg_dump` (runbook). |
 | `bootstrap.py` | Tenant creation: 9 departments, 9 founding agents, owner API key. |
@@ -71,7 +72,11 @@ Founding agents take 76% of the tenant budget (scaled), leaving 24% for dynamica
    (by policy) external email never execute directly; they become `ApprovalRequest`s.
 5. **Budget**: worst-case pre-check per model call against agent and org ceilings; immutable
    ledger; spend from failed runs is re-recorded after rollback; total allocation ≤ org budget.
-6. **Reliability**: idempotency keys on tasks and outbound messages; atomic workflow steps;
-   leases; bounded exponential retry; dead-letter; auto-suspension and automatic repair task.
+6. **Reliability**: idempotency keys on tasks and outbound messages (agent-supplied keys are
+   namespaced); atomic workflow steps; leases with claim tokens; bounded exponential retry;
+   dead-letter; email sent only after commit; auto-suspension and automatic repair task.
+8. **Model input is untrusted**: tool arguments are validated strictly against each tool's schema;
+   referenced IDs are resolved through the tenant session; delegation cannot carry authority
+   upward and is depth-limited.
 7. **Independent QA**: `wwos qa` audits invariants straight from the tables; the acceptance
    suite exercises only public surfaces; agent versions must pass acceptance tests to go live.

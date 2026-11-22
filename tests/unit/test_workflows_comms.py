@@ -141,15 +141,18 @@ def test_email_delivery_is_exactly_once_and_failures_recorded(tenant):
 
     with tenant_session(tid) as s:
         m, _ = comms.draft_email(s, idempotency_key="e1", to="a@b.com", subject="Hi", body="Body")
+        comms.request_send(s, m.id)
         mid = m.id
     comms.set_transport(Boom())
-    with pytest.raises(ConnectionError):
-        with tenant_session(tid) as s:
-            comms.deliver(s, mid)
-    comms.set_transport(None)
+    assert comms.dispatch() == 0
     with tenant_session(tid) as s:
-        comms.deliver(s, mid)
-        comms.deliver(s, mid)
+        msg = s.get(OutboundMessage, mid)
+        assert msg.status == "queued" and "smtp down" in msg.last_error and msg.attempts == 1
+    comms.set_transport(None)
+    assert comms.dispatch() == 1
+    assert comms.dispatch() == 0
+    with tenant_session(tid) as s:
+        comms.request_send(s, mid)  # idempotent once sent
         again, created = comms.draft_email(s, idempotency_key="e1", to="a@b.com", subject="Hi", body="Body")
-        assert not created
+        assert not created and s.get(OutboundMessage, mid).status == "sent"
     assert len(comms.OutboxTransport.delivered) == 1

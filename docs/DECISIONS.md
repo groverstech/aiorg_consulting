@@ -57,3 +57,36 @@ future integration) performs the act. The system never claims a payment was made
 ### ADR-010: Agent changes ship as tested versions
 `revise` creates version N+1 under the same lineage, runs the acceptance test, and only then
 retires version N. A failing revision is retired immediately and the working version keeps running.
+
+### ADR-011: Outbox delivery is at-most-once, with "unknown" for humans
+Business steps only *queue* email (`comms.request_send`); `comms.dispatch` sends after commit and
+records `queued → sending → sent` in separate committed transactions. If a worker dies between
+the SMTP hand-off and recording `sent`, the message becomes `unknown` after 10 minutes and is
+shown on the dashboard. It is never re-sent automatically: a duplicate client email is worse
+than one that needs checking.
+
+### ADR-012: Strict tool-argument validation is the security boundary for model input
+The model controls tool arguments. `tools.validate_args` rejects unknown keys and wrong types
+before the approval gate and before any handler runs, and handlers take explicit parameters.
+Origin: the independent review proved that `**kwargs` passthrough let an agent set internal
+parameters (privilege escalation).
+
+### ADR-013: Claim tokens make task commits conditional
+Each claim stamps a fresh `claim_token`; results commit through a conditional UPDATE on that
+token, so a worker whose lease expired can never commit after another worker reclaimed the
+task. Leases default to 15 minutes to cover long multi-turn agent runs.
+
+### ADR-014: SQLite transactions are managed explicitly
+pysqlite defers `BEGIN` until the first write, which turns an early SAVEPOINT release into a
+commit. The engine disables driver autocommit handling and emits `BEGIN` itself (SQLAlchemy's
+documented recipe), so outer rollbacks undo nested work on SQLite exactly as on PostgreSQL.
+
+### ADR-015: Authority does not flow through delegation
+Only the owner (or another provisioning-capable agent) can assign work to a provisioning-capable
+agent, via API or `tasks.delegate`. Agents cannot delegate to themselves, and delegation chains
+are limited to depth 3. This prevents an operator or a department agent from borrowing the
+CEO's provisioning authority.
+
+### ADR-016: Schema created with `create_all`; migrations needed before the first schema change in production
+There is no production database yet, so tables are created from the models. Before the first
+schema change after go-live, introduce Alembic with a baseline revision of the deployed schema.

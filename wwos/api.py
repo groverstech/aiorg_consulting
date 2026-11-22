@@ -23,7 +23,7 @@ from . import approvals, budget, crm, db, documents, workflows
 from .agents import lifecycle
 from .bootstrap import hash_key
 from .models import (Activity, Agent, ApiKey, ApprovalRequest, AuditLog, Contact, Deal, Department, Document,
-                     OutboundMessage, Task, Tenant)
+                     OutboundMessage, Task, Tenant, WebSession)
 from .policy import PermissionDenied
 
 ROLE_RANK = {"viewer": 0, "operator": 1, "owner": 2}
@@ -77,8 +77,7 @@ def principal(request: Request) -> Principal:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         raw = auth[7:].strip()
-    raw = raw or request.cookies.get("wwos_key")
-    p = _lookup_key(raw)
+    p = _lookup_key(raw) or _web_principal(request)
     if p is None:
         raise HTTPException(status_code=401, detail="invalid or missing API key")
     return p
@@ -86,7 +85,7 @@ def principal(request: Request) -> Principal:
 
 def require(role: str):
     def dep(p: Principal = Depends(principal)) -> Principal:
-        if ROLE_RANK[p.role] < ROLE_RANK[role]:
+        if ROLE_RANK.get(p.role, -1) < ROLE_RANK[role]:  # unknown roles fail closed
             raise HTTPException(status_code=403, detail=f"{role} role required")
         return p
     return dep
@@ -127,13 +126,29 @@ def _row(obj: Any, *fields: str) -> dict:
 
 @app.get("/health")
 def health() -> dict:
+    """Public liveness probe: reveals nothing about tenants or workload."""
     with db.system_session() as s:
         s.execute(text("SELECT 1"))
-        queued = s.execute(select(func.count(Task.id)).where(Task.status == "queued")).scalar_one()
-        dead = s.execute(select(func.count(Task.id)).where(Task.status == "dead")).scalar_one()
+    return {"status": "ok"}
+
+
+@app.get("/health/details")
+def health_details(request: Request) -> dict:
+    """Platform operator view (cross-tenant counts). Requires the X-Admin-Token header."""
+    from .config import get_settings
     from .schedule import last_qa
 
-    return {"status": "ok", "database": "ok", "queued_tasks": queued, "dead_tasks": dead, "last_qa_scan": last_qa()}
+    token = get_settings().admin_token
+    supplied = request.headers.get("x-admin-token", "")
+    if not token or not secrets.compare_digest(token, supplied):
+        raise HTTPException(status_code=404, detail="not found")
+    with db.system_session() as s:
+        queued = s.execute(select(func.count(Task.id)).where(Task.status == "queued")).scalar_one()
+        dead = s.execute(select(func.count(Task.id)).where(Task.status == "dead")).scalar_one()
+        unknown_mail = s.execute(select(func.count(OutboundMessage.id))
+                                 .where(OutboundMessage.status == "unknown")).scalar_one()
+    return {"status": "ok", "queued_tasks": queued, "dead_tasks": dead, "emails_unknown_outcome": unknown_mail,
+            "last_qa_scan": last_qa()}
 
 
 # ---------------------------------------------------------------- CRM
@@ -301,10 +316,12 @@ def suspend_agent(agent_id: str, body: ReasonIn, s: Session = Depends(owner_sess
 
 
 @app.post("/api/agents/{agent_id}/reactivate")
-def reactivate_agent(agent_id: str, s: Session = Depends(owner_session)) -> dict:
+def reactivate_agent(agent_id: str, s: Session = Depends(owner_session)):
     a = _404(s.get(Agent, agent_id), "agent")
-    lifecycle.reactivate(s, lifecycle.tenant_of(s), a, lifecycle.OWNER)
-    return {"id": a.id, "status": a.status}
+    ok, detail = lifecycle.reactivate(s, lifecycle.tenant_of(s), a, lifecycle.OWNER)
+    body = {"id": a.id, "status": a.status, "detail": detail}
+    # A failed re-test still commits (agent stays suspended; the test's spend stays on the ledger).
+    return body if ok else JSONResponse(status_code=409, content=body)
 
 
 class ReviseIn(BaseModel):
@@ -330,11 +347,15 @@ class TaskIn(BaseModel):
 
 
 @app.post("/api/tasks", status_code=202)
-def assign_task(body: TaskIn, s: Session = Depends(operator_session)) -> dict:
+def assign_task(body: TaskIn, p: Principal = Depends(require("operator")),
+                s: Session = Depends(operator_session)) -> dict:
     a = _404(s.get(Agent, body.agent_id), "agent")
     if a.status != "active":
         raise HTTPException(status_code=409, detail=f"agent is {a.status}")
-    key = body.idempotency_key or f"api:{secrets.token_hex(8)}"
+    if a.can_provision_agents and p.role != "owner":
+        # Provisioning-capable agents act with owner-level reach; only the owner may task them.
+        raise HTTPException(status_code=403, detail="owner role required to assign work to this agent")
+    key = f"api:{body.idempotency_key}" if body.idempotency_key else f"api:{secrets.token_hex(8)}"
     task, created = workflows.enqueue(s, kind="agent_run", idempotency_key=key, agent_id=a.id,
                                       payload={"instruction": body.instruction, "delegated_by": "owner"})
     return {"task_id": task.id, "created": created, "status": task.status}
@@ -342,7 +363,7 @@ def assign_task(body: TaskIn, s: Session = Depends(operator_session)) -> dict:
 
 @app.get("/api/tasks")
 def list_tasks(status: str | None = None, limit: int = 100, s: Session = Depends(viewer_session)) -> list[dict]:
-    q = select(Task).order_by(Task.created_at.desc()).limit(min(limit, 500))
+    q = select(Task).order_by(Task.created_at.desc()).limit(max(1, min(limit, 500)))
     if status:
         q = q.where(Task.status == status)
     return [_row(t, "id", "kind", "status", "attempts", "agent_id", "workflow_id", "last_error", "result",
@@ -350,9 +371,10 @@ def list_tasks(status: str | None = None, limit: int = 100, s: Session = Depends
 
 
 @app.post("/api/worker/drain")
-def drain(p: Principal = Depends(require("operator"))) -> dict:
-    """Process due tasks now. Production runs a dedicated worker; this exists for small deployments."""
-    return {"processed": workflows.drain(max_tasks=200)}
+def drain(p: Principal = Depends(require("owner"))) -> dict:
+    """Process this tenant's due tasks now. Production runs a dedicated worker; this exists for
+    small single-process deployments."""
+    return {"processed": workflows.drain(max_tasks=200, tenant_id=p.tenant_id)}
 
 
 # ---------------------------------------------------------------- approvals, budget, audit
@@ -388,7 +410,7 @@ def budget_status(s: Session = Depends(viewer_session)) -> dict:
 @app.get("/api/audit")
 def audit_log(limit: int = 200, s: Session = Depends(owner_session)) -> list[dict]:
     return [_row(a, "id", "actor", "action", "target", "detail", "created_at")
-            for a in s.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(min(limit, 1000)))]
+            for a in s.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(max(1, min(limit, 1000))))]
 
 
 # ---------------------------------------------------------------- dashboard
@@ -423,7 +445,39 @@ def dashboard_data(s: Session) -> dict:
         "task_counts": task_counts,
         "contacts": s.execute(select(func.count(Contact.id))).scalar_one(),
         "documents": list(s.scalars(select(Document).order_by(Document.created_at.desc()).limit(8))),
+        "attention": list(s.scalars(select(Agent).where(Agent.status == "suspended").order_by(Agent.name))),
+        "unknown_mail": list(s.scalars(select(OutboundMessage).where(OutboundMessage.status.in_(["unknown", "failed"])))),
     }
+
+
+SESSION_HOURS = 8
+
+
+def _same_origin(request: Request) -> bool:
+    """Reject cross-site form posts (login CSRF etc.). Browsers send Origin on POST."""
+    origin = request.headers.get("origin")
+    if origin is None:
+        return True  # non-browser clients
+    return origin.rstrip("/") == f"{request.url.scheme}://{request.url.netloc}"
+
+
+def _web_principal(request: Request) -> Principal | None:
+    from datetime import datetime, timezone
+
+    raw = request.cookies.get("wwos_session")
+    if not raw:
+        return None
+    with db.system_session() as s:
+        ws = s.scalars(select(WebSession).where(WebSession.token_hash == hash_key(raw))).first()
+        if ws is None:
+            return None
+        expires = ws.expires_at if ws.expires_at.tzinfo else ws.expires_at.replace(tzinfo=timezone.utc)
+        if expires < datetime.now(timezone.utc):
+            return None
+        key = s.get(ApiKey, ws.api_key_id)
+        if key is None or not key.active:
+            return None
+        return Principal(tenant_id=key.tenant_id, role=key.role, key_name=key.name)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -437,24 +491,43 @@ def login_page(request: Request, error: str = ""):
 
 
 @app.post("/login")
-def login(api_key: str = Form(...)):
-    if _lookup_key(api_key) is None:
-        return RedirectResponse("/login?error=Invalid+key", status_code=303)
+def login(request: Request, api_key: str = Form(...)):
+    from datetime import timedelta
+
+    from .config import get_settings
+    from .models import utcnow
+
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="cross-site request refused")
+    with db.system_session() as s:
+        key = s.scalars(select(ApiKey).where(ApiKey.key_hash == hash_key(api_key), ApiKey.active.is_(True))).first()
+        if key is None:
+            return RedirectResponse("/login?error=Invalid+key", status_code=303)
+        token = secrets.token_urlsafe(32)
+        s.add(WebSession(tenant_id=key.tenant_id, token_hash=hash_key(token), api_key_id=key.id,
+                         expires_at=utcnow() + timedelta(hours=SESSION_HOURS)))
     resp = RedirectResponse("/dashboard", status_code=303)
-    resp.set_cookie("wwos_key", api_key, httponly=True, samesite="strict", secure=False, max_age=8 * 3600)
+    resp.set_cookie("wwos_session", token, httponly=True, samesite="strict", secure=get_settings().cookie_secure,
+                    max_age=SESSION_HOURS * 3600)
     return resp
 
 
 @app.post("/logout")
-def logout():
+def logout(request: Request):
+    from sqlalchemy import delete
+
+    raw = request.cookies.get("wwos_session")
+    if raw and _same_origin(request):
+        with db.system_session() as s:
+            s.execute(delete(WebSession).where(WebSession.token_hash == hash_key(raw)))
     resp = RedirectResponse("/login", status_code=303)
-    resp.delete_cookie("wwos_key")
+    resp.delete_cookie("wwos_session")
     return resp
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
-    p = _lookup_key(request.cookies.get("wwos_key"))
+    p = _web_principal(request)
     if p is None:
         return RedirectResponse("/login")
     with db.tenant_session(p.tenant_id) as s:
@@ -463,13 +536,29 @@ def dashboard(request: Request):
         return templates.TemplateResponse(request, "dashboard.html", ctx)
 
 
-@app.post("/dashboard/approvals/{approval_id}")
-def dashboard_decide(approval_id: str, request: Request, decision: str = Form(...)):
-    p = _lookup_key(request.cookies.get("wwos_key"))
+def _dashboard_owner(request: Request) -> Principal:
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="cross-site request refused")
+    p = _web_principal(request)
     if p is None:
-        return RedirectResponse("/login", status_code=303)
+        raise HTTPException(status_code=401, detail="sign in required")
     if p.role != "owner":
         raise HTTPException(status_code=403, detail="owner role required")
+    return p
+
+
+@app.post("/dashboard/approvals/{approval_id}")
+def dashboard_decide(approval_id: str, request: Request, decision: str = Form(...)):
+    p = _dashboard_owner(request)
     with db.tenant_session(p.tenant_id) as s:
         approvals.decide(s, approval_id, approve=decision == "approve", actor=f"owner:{p.key_name}")
+    return RedirectResponse("/dashboard", status_code=303)
+
+
+@app.post("/dashboard/agents/{agent_id}/reactivate")
+def dashboard_reactivate(agent_id: str, request: Request):
+    p = _dashboard_owner(request)
+    with db.tenant_session(p.tenant_id) as s:
+        a = _404(s.get(Agent, agent_id), "agent")
+        lifecycle.reactivate(s, lifecycle.tenant_of(s), a, f"owner:{p.key_name}")
     return RedirectResponse("/dashboard", status_code=303)

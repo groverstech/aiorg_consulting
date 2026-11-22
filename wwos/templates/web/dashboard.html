@@ -12,6 +12,12 @@
  <div class="card kpi"><div class="l">Contacts</div><div class="v">{{ contacts }}</div></div>
 </div>
 
+{% if attention or unknown_mail %}<div class="card"><h2>Needs your attention</h2><table>
+{% for a in attention %}<tr><td>{{ a.name }} v{{ a.version }} is <span class="pill suspended">suspended</span></td><td class="muted">{{ a.status_reason }}</td>
+<td>{% if role == "owner" %}<form method="post" action="/dashboard/agents/{{ a.id }}/reactivate"><button>Re-test &amp; reactivate</button></form>{% endif %}</td></tr>{% endfor %}
+{% for m in unknown_mail %}<tr><td>Email to {{ m.to_address }}: <span class="pill failed">{{ m.status }}</span></td><td class="muted">{{ m.subject }} &middot; {{ m.last_error }}</td><td></td></tr>{% endfor %}
+</table></div>{% endif %}
+
 <div class="card"><h2>Owner approvals</h2>
 {% if approvals %}<table><tr><th>Category</th><th>Action</th><th>Requested by</th><th>Details</th><th></th></tr>
 {% for item in approvals %}{% set r = item.r %}<tr><td>{{ r.category }}</td><td><code>{{ r.action }}</code></td><td>{{ r.requested_by }}</td>

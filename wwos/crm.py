@@ -122,6 +122,11 @@ def move_deal(s: Session, deal_id: str, stage: str, actor: str = "system") -> De
 
 def log_activity(s: Session, *, kind: str, summary: str, contact_id: str | None = None,
                  deal_id: str | None = None, actor: str = "system") -> Activity:
+    # Referenced ids are looked up through the (tenant-scoped) session so a foreign id is "not found".
+    if contact_id is not None and s.get(Contact, contact_id) is None:
+        raise CRMValidationError("contact not found")
+    if deal_id is not None and s.get(Deal, deal_id) is None:
+        raise CRMValidationError("deal not found")
     act = Activity(kind=kind, summary=summary, contact_id=contact_id, deal_id=deal_id, actor=actor)
     s.add(act)
     return act

@@ -66,10 +66,19 @@ def _make_engine(url: str) -> Engine:
 
         @event.listens_for(engine, "connect")
         def _sqlite_pragmas(dbapi_conn, _record):  # pragma: no cover - driver hook
+            # pysqlite defers BEGIN until the first DML, so a SAVEPOINT issued before any write runs
+            # outside a transaction and its RELEASE commits. Take over transaction control so
+            # savepoints nest properly and an outer rollback undoes everything (SQLAlchemy recipe).
+            dbapi_conn.isolation_level = None
             cur = dbapi_conn.cursor()
             cur.execute("PRAGMA foreign_keys=ON")
             cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA busy_timeout=10000")
             cur.close()
+
+        @event.listens_for(engine, "begin")
+        def _sqlite_begin(conn):  # pragma: no cover - driver hook
+            conn.exec_driver_sql("BEGIN")
 
     return engine
 

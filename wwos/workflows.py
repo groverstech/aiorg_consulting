@@ -32,7 +32,7 @@ from .budget import BudgetExceeded
 from .config import get_settings
 from .db import system_session, tenant_session
 from .llm import PermanentLLMError
-from .models import Agent, ApprovalRequest, Contact, Deal, Task, Tenant, utcnow
+from .models import Agent, ApprovalRequest, Contact, Deal, Task, Tenant, new_id, utcnow
 from .policy import PermissionDenied, audit
 from .tools import ToolContext
 
@@ -47,6 +47,9 @@ def enqueue(s: Session, *, kind: str, idempotency_key: str, payload: dict[str, A
             delay_seconds: int = 0) -> tuple[Task, bool]:
     existing = s.scalars(select(Task).where(Task.idempotency_key == idempotency_key)).first()
     if existing:
+        if existing.kind != kind:
+            # A different kind of task holds this key (e.g. a squatted key): never silently alias it.
+            raise PermissionDenied(f"idempotency key {idempotency_key!r} is already used by a {existing.kind} task")
         return existing, False
     task = Task(kind=kind, idempotency_key=idempotency_key, payload=payload or {}, agent_id=agent_id,
                 workflow_id=workflow_id, run_after=utcnow() + timedelta(seconds=delay_seconds))
@@ -76,7 +79,16 @@ def _agent_run(s: Session, tenant: Tenant, task: Task, trace: RunTrace) -> dict:
     agent = s.get(Agent, task.agent_id) if task.agent_id else None
     if agent is None:
         raise PermissionDenied("task has no valid agent")
-    text = run_agent_prompt(s, tenant, agent, task.payload["instruction"], task_id=task.id, trace=trace)
+    if agent.status == "retired":
+        # The agent was revised after this task was queued: route to the current version of its lineage.
+        current = s.scalars(select(Agent).where(Agent.lineage_id == agent.lineage_id, Agent.status == "active")
+                            .order_by(Agent.version.desc())).first()
+        if current is None:
+            raise PermissionDenied(f"agent {agent.name} is retired and has no active successor")
+        agent = current
+        task.agent_id = current.id
+    text = run_agent_prompt(s, tenant, agent, task.payload["instruction"], task_id=task.id, trace=trace,
+                            depth=int(task.payload.get("depth", 0)))
     return {"summary": text, "tool_calls": trace.tool_calls, "approvals": trace.approvals}
 
 
@@ -87,9 +99,12 @@ def _approval_execute(s: Session, tenant: Tenant, task: Task, trace: RunTrace) -
     req = s.get(ApprovalRequest, task.payload["approval_id"])
     if req is None or req.status not in ("approved",):
         return {"skipped": True, "reason": "approval not in approved state"}
-    ctx = ToolContext(session=s, tenant=tenant, agent=None, task_id=task.id)
+    from .tools import validate_args
+
+    ctx = ToolContext(session=s, tenant=tenant, agent=None, task_id=task.id, trace=trace)
+    params = validate_args(req.action, dict(req.params or {}))
     with s.begin_nested():
-        result = TOOLS[req.action].handler(ctx, **req.params)
+        result = TOOLS[req.action].handler(ctx, **params)
     req.status = "executed"
     req.result = result
     audit(s, req.decided_by or "owner", "approval.executed", req.id, action=req.action)
@@ -140,7 +155,8 @@ def _wf_qualify(s: Session, tenant: Tenant, task: Task, trace: RunTrace) -> dict
     qualified = score >= 60
     crm.move_deal(s, p["deal_id"], "qualified" if qualified else "lost", actor="workflow")
     contact = s.get(Contact, p["contact_id"])
-    contact.lifecycle = "qualified" if qualified else "disqualified"
+    if contact.lifecycle != "customer":  # a repeat enquiry must never downgrade an existing customer
+        contact.lifecycle = "qualified" if qualified else "disqualified"
     note = f"Qualification score {score}/100: {', '.join(reasons) or 'insufficient information'}."
     sales = find_agent(s, role="sales")
     if sales is not None:
@@ -213,7 +229,8 @@ def _wf_outreach(s: Session, tenant: Tenant, task: Task, trace: RunTrace) -> dic
         from .models import OutboundMessage
 
         msg = s.get(OutboundMessage, draft["message_id"])
-        msg.status = "pending_approval"
+        if msg.status == "draft":
+            msg.status = "pending_approval"
     return {"message_id": draft["message_id"], "send": sent}
 
 
@@ -222,8 +239,6 @@ def start_lead_workflow(s: Session, lead: dict[str, Any], idempotency_key: str |
     if not lead.get("first_name"):
         raise crm.CRMValidationError("first_name is required")
     key = idempotency_key or f"lead:{lead['email'].strip().lower()}:{lead.get('title') or lead.get('company') or ''}"
-    from .models import new_id
-
     existing = s.scalars(select(Task).where(Task.idempotency_key == key)).first()
     if existing:
         return existing
@@ -234,32 +249,45 @@ def start_lead_workflow(s: Session, lead: dict[str, Any], idempotency_key: str |
 # ---------------------------------------------------------------- worker
 
 
-def claim_next(now=None) -> tuple[str, str] | None:
-    """Atomically claim one due task across tenants. Returns (task_id, tenant_id)."""
+class LeaseLost(RuntimeError):
+    """Another worker reclaimed this task after our lease expired; our results must not commit."""
+
+
+def claim_next(now=None, tenant_id: str | None = None) -> tuple[str, str, str] | None:
+    """Atomically claim one due task. Returns (task_id, tenant_id, claim_token)."""
     cfg = get_settings()
     now = now or utcnow()
     with system_session() as s:
-        candidates = s.execute(
-            select(Task.id, Task.tenant_id, Task.status).where(
-                or_(
-                    (Task.status == "queued") & (Task.run_after <= now),
-                    (Task.status == "running") & (Task.lease_until < now),
-                )
-            ).order_by(Task.run_after).limit(10)
-        ).all()
-        for task_id, tenant_id, status in candidates:
+        q = select(Task.id, Task.tenant_id, Task.status).where(
+            or_(
+                (Task.status == "queued") & (Task.run_after <= now),
+                (Task.status == "running") & (Task.lease_until < now),
+            )
+        ).order_by(Task.run_after).limit(10)
+        if tenant_id:
+            q = q.where(Task.tenant_id == tenant_id)
+        for task_id, owner, status in s.execute(q).all():
+            token = new_id()
             res = s.execute(
                 update(Task).where(Task.id == task_id, Task.status == status)
                 .values(status="running", lease_until=now + timedelta(seconds=cfg.task_lease_seconds),
-                        attempts=Task.attempts + 1)
+                        attempts=Task.attempts + 1, claim_token=token)
             )
             if res.rowcount == 1:
                 s.commit()
-                return task_id, tenant_id
+                return task_id, owner, token
     return None
 
 
-def process(task_id: str, tenant_id: str) -> str:
+def _finish(s: Session, task_id: str, token: str, **values) -> None:
+    """Commit task state only if we still hold the claim (conditional update = row lock + check)."""
+    res = s.execute(update(Task).where(Task.id == task_id, Task.claim_token == token, Task.status == "running")
+                    .values(lease_until=None, updated_at=utcnow(), **values))
+    if res.rowcount != 1:
+        raise LeaseLost(f"task {task_id} was reclaimed by another worker")
+
+
+def process(task_id: str, tenant_id: str, token: str) -> str:
     """Run one claimed task. Returns its final status."""
     cfg = get_settings()
     trace = RunTrace()
@@ -273,14 +301,12 @@ def process(task_id: str, tenant_id: str) -> str:
                 raise PermissionDenied(f"no handler for task kind {task.kind}")
             result = fn(s, tenant, task, trace)
             persist_spend(s, trace)
-            task.status = "succeeded"
-            task.result = result
-            task.last_error = ""
-            task.lease_until = None
             if task.agent_id:
                 agent = s.get(Agent, task.agent_id)
                 if agent:
                     agent.consecutive_failures = 0
+            s.flush()
+            _finish(s, task_id, token, status="succeeded", result=_jsonable(result), last_error="")
         return "succeeded"
     except Exception as e:  # noqa: BLE001
         error = e
@@ -288,19 +314,30 @@ def process(task_id: str, tenant_id: str) -> str:
     trace.persisted = 0  # the failed transaction rolled back every ledger write
     with tenant_session(tenant_id) as s:
         persist_spend(s, trace)
+        if isinstance(error, LeaseLost):
+            log.warning("%s", error)
+            return "lease_lost"
         task = s.get(Task, task_id)
-        task.last_error = f"{type(error).__name__}: {error}"[:4000]
-        task.lease_until = None
+        if task.claim_token != token or task.status != "running":
+            return "lease_lost"
+        last_error = f"{type(error).__name__}: {error}"[:4000]
         retryable = not isinstance(error, NON_RETRYABLE)
         if retryable and task.attempts < cfg.task_max_attempts:
-            task.status = "queued"
-            task.run_after = utcnow() + timedelta(seconds=min(2 ** task.attempts * 5, 600))
+            status = "queued"
+            extra = {"run_after": utcnow() + timedelta(seconds=min(2 ** task.attempts * 5, 600))}
         else:
-            task.status = "dead"
-        audit(s, "worker", "task.failed", task.id, kind=task.kind, error=task.last_error, final=task.status)
+            status, extra = "dead", {}
+        _finish(s, task_id, token, status=status, last_error=last_error, **extra)
+        audit(s, "worker", "task.failed", task_id, kind=task.kind, error=last_error, final=status)
         if task.agent_id:
-            _record_agent_failure(s, task.agent_id, task.last_error)
-        return task.status
+            _record_agent_failure(s, task.agent_id, last_error)
+        return status
+
+
+def _jsonable(value):
+    import json
+
+    return json.loads(json.dumps(value, default=str))
 
 
 def _record_agent_failure(s: Session, agent_id: str, error: str) -> None:
@@ -315,10 +352,12 @@ def _record_agent_failure(s: Session, agent_id: str, error: str) -> None:
         agent.status = "suspended"
         agent.status_reason = f"auto-suspended after {agent.consecutive_failures} consecutive failures: {error[:300]}"
         audit(s, "system", "agent.auto_suspended", agent.id, reason=agent.status_reason)
+        if agent.can_provision_agents:
+            return  # only the owner may repair a provisioning-capable agent; the dashboard flags it
         tech = find_agent(s, role="technology")
         if tech is not None and tech.id != agent.id:
             enqueue(s, kind="agent_run", agent_id=tech.id,
-                    idempotency_key=f"recover:{agent.id}:{agent.updated_at.isoformat() if agent.updated_at else ''}",
+                    idempotency_key=f"recover:{agent.id}:{new_id()}",
                     payload={"instruction": (
                         f"Agent {agent.name} (id {agent.id}) was auto-suspended: {agent.status_reason}. "
                         "Diagnose the likely cause from its instructions and recent errors, then either "
@@ -327,8 +366,8 @@ def _record_agent_failure(s: Session, agent_id: str, error: str) -> None:
 
 
 def run_worker(poll_seconds: float = 2.0, max_tasks: int | None = None, stop_when_idle: bool = False,
-               scheduled: bool = False) -> int:
-    from . import schedule
+               scheduled: bool = False, tenant_id: str | None = None) -> int:
+    from . import comms, schedule
 
     done = 0
     last_tick = 0.0
@@ -339,7 +378,11 @@ def run_worker(poll_seconds: float = 2.0, max_tasks: int | None = None, stop_whe
             except Exception:  # noqa: BLE001 - scheduling must never stop task processing
                 log.exception("schedule tick failed")
             last_tick = time.monotonic()
-        claimed = claim_next()
+        try:
+            comms.dispatch(tenant_id=tenant_id)
+        except Exception:  # noqa: BLE001 - delivery problems must never stop task processing
+            log.exception("outbox dispatch failed")
+        claimed = claim_next(tenant_id=tenant_id)
         if claimed is None:
             if stop_when_idle:
                 break
@@ -351,6 +394,10 @@ def run_worker(poll_seconds: float = 2.0, max_tasks: int | None = None, stop_whe
     return done
 
 
-def drain(max_tasks: int = 500) -> int:
-    """Process every due task now (used by tests, CLI and QA)."""
-    return run_worker(max_tasks=max_tasks, stop_when_idle=True)
+def drain(max_tasks: int = 500, tenant_id: str | None = None) -> int:
+    """Process every due task now, then flush the outbox (used by tests, CLI and the API)."""
+    from . import comms
+
+    n = run_worker(max_tasks=max_tasks, stop_when_idle=True, tenant_id=tenant_id)
+    comms.dispatch(tenant_id=tenant_id)
+    return n

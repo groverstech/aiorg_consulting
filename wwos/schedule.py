@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from .agents.runtime import find_agent
 from .db import system_session, tenant_session
-from .models import Tenant, utcnow
+from .models import SystemStatus, Tenant, utcnow
 
 log = logging.getLogger("wwos.schedule")
 
@@ -38,7 +38,6 @@ JOBS = [
         "delegate follow-ups to the responsible agent. Report anything that needs the owner's attention."),
 ]
 
-_last_qa: dict = {"at": None, "passed": None, "summary": ""}
 
 
 def _period_key(period: str, now: datetime) -> str:
@@ -64,15 +63,24 @@ def tick(now: datetime | None = None) -> int:
                                  payload={"instruction": job.instruction, "delegated_by": f"schedule:{job.name}"})
                 created += int(new)
     hour = _period_key("hourly", now)
-    if _last_qa["at"] != hour:
+    if last_qa().get("at") != hour:
         from . import qa
 
         report = qa.run()
-        _last_qa.update(at=hour, passed=report.passed,
-                        summary=f"{sum(c.passed for c in report.checks)}/{len(report.checks)} checks passed")
-        (log.info if report.passed else log.error)("QA scan: %s", _last_qa["summary"])
+        result = {"at": hour, "passed": report.passed,
+                  "summary": f"{sum(c.passed for c in report.checks)}/{len(report.checks)} checks passed",
+                  "failed": [c.name for c in report.checks if not c.passed]}
+        with system_session() as s:  # shared across processes so the API can report it
+            row = s.get(SystemStatus, "last_qa")
+            if row is None:
+                s.add(SystemStatus(key="last_qa", value=result))
+            else:
+                row.value = result
+        (log.info if report.passed else log.error)("QA scan: %s", result["summary"])
     return created
 
 
 def last_qa() -> dict:
-    return dict(_last_qa)
+    with system_session() as s:
+        row = s.get(SystemStatus, "last_qa")
+        return dict(row.value) if row else {"at": None, "passed": None, "summary": "no scan yet"}

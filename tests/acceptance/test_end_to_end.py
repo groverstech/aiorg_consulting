@@ -174,7 +174,8 @@ def test_dashboard_login_and_approval_from_dashboard(client, tenant):
     client.post("/api/leads", json=LEAD, headers=H(key))
     client.post("/api/worker/drain", headers=H(key))
     r = client.post("/login", data={"api_key": key}, follow_redirects=False)
-    assert r.status_code == 303 and "wwos_key" in r.cookies
+    assert r.status_code == 303 and "wwos_session" in r.cookies
+    assert key not in r.headers.get("set-cookie", "")  # the API key itself never goes into the cookie
     page = client.get("/dashboard")
     assert page.status_code == 200
     for text in ["Owner approvals", "Agent workforce", "Pipeline", "CEO", "comms.send_email",

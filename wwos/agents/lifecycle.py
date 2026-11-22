@@ -73,13 +73,17 @@ def validate_spec(s: Session, tenant: Tenant, *, creator: Agent | None, tools: l
             raise ProvisioningError("only the owner can create agents that manage other agents")
 
 
-def acceptance_test(s: Session, tenant: Tenant, agent: Agent) -> tuple[bool, str]:
+def acceptance_test(s: Session, tenant: Tenant, agent: Agent, trace=None) -> tuple[bool, str]:
     """Automated acceptance check run before any agent version goes live.
 
     1. Static checks: tools resolvable, model approved, budget positive.
     2. Permission check: a tool the agent does NOT hold must be refused.
     3. Live smoke test: the agent answers a short prompt through the real runtime
        (counts against its budget, capped at a small max_tokens).
+
+    Spend: with a caller ``trace`` (e.g. a tool call inside a worker task) the spend is appended
+    to it and the caller persists it, including after a rollback. Without one it is written to
+    this session immediately, and callers must not roll that session back after a failed test.
     """
     from ..policy import PermissionDenied, check_tool_permission
     from .runtime import RunTrace, persist_spend, run_agent_prompt
@@ -93,7 +97,8 @@ def acceptance_test(s: Session, tenant: Tenant, agent: Agent) -> tuple[bool, str
             return False, f"permission leak: {probe} was not refused"
         except PermissionDenied:
             pass
-    trace = RunTrace()
+    own_trace = trace is None
+    trace = RunTrace() if own_trace else trace
     try:
         result = run_agent_prompt(
             s, tenant, agent,
@@ -103,7 +108,8 @@ def acceptance_test(s: Session, tenant: Tenant, agent: Agent) -> tuple[bool, str
     except Exception as e:  # noqa: BLE001 - any failure fails the test
         return False, f"smoke test failed: {e}"
     finally:
-        persist_spend(s, trace)
+        if own_trace:
+            persist_spend(s, trace)
     if not result.strip():
         return False, "smoke test returned no text"
     return True, "passed"
@@ -113,7 +119,7 @@ def provision(s: Session, tenant: Tenant, *, name: str, role: str, department_co
               tools: list[str], model: str | None = None, monthly_budget_usd: Decimal | str | float = "10",
               can_provision: bool = False, creator: Agent | None = None, lineage_id: str | None = None,
               version: int = 1, replacing_agent_id: str | None = None, activate: bool = True,
-              baseline_tools: list[str] | None = None) -> Agent:
+              baseline_tools: list[str] | None = None, trace=None) -> Agent:
     model = model or get_settings().default_model
     budget = Decimal(str(monthly_budget_usd))
     validate_spec(s, tenant, creator=creator, tools=tools, model=model, monthly_budget_usd=budget,
@@ -134,7 +140,7 @@ def provision(s: Session, tenant: Tenant, *, name: str, role: str, department_co
           budget=str(budget), model=model)
     if not activate:
         return agent
-    ok, detail = acceptance_test(s, tenant, agent)
+    ok, detail = acceptance_test(s, tenant, agent, trace)
     if ok:
         agent.status = "active"
         agent.status_reason = "acceptance test passed"
@@ -156,24 +162,28 @@ def suspend(s: Session, agent: Agent, reason: str, actor: str) -> Agent:
     return agent
 
 
-def reactivate(s: Session, tenant: Tenant, agent: Agent, actor: str) -> Agent:
+def reactivate(s: Session, tenant: Tenant, agent: Agent, actor: str, trace=None) -> tuple[bool, str]:
+    """Re-test and reactivate a suspended agent. Returns (ok, detail). A failed test leaves the agent
+    suspended and does NOT raise, so the caller commits and the test's model spend stays recorded."""
     if agent.status != "suspended":
         raise ProvisioningError("only suspended agents can be reactivated")
     agent.status = "testing"  # the runtime refuses suspended agents, so test in the testing state
-    ok, detail = acceptance_test(s, tenant, agent)
+    ok, detail = acceptance_test(s, tenant, agent, trace)
     if not ok:
         agent.status = "suspended"
-        raise ProvisioningError(f"reactivation blocked: {detail}")
+        agent.status_reason = f"reactivation blocked: {detail}"
+        audit(s, actor, "agent.reactivation_failed", agent.id, detail=detail)
+        return False, detail
     agent.status = "active"
     agent.consecutive_failures = 0
     agent.status_reason = f"reactivated by {actor}"
     audit(s, actor, "agent.reactivated", agent.id)
-    return agent
+    return True, "passed"
 
 
 def revise(s: Session, tenant: Tenant, agent: Agent, *, actor_agent: Agent | None,
            instructions: str | None = None, tools: list[str] | None = None, model: str | None = None,
-           monthly_budget_usd: Decimal | str | None = None) -> Agent:
+           monthly_budget_usd: Decimal | str | None = None, trace=None) -> Agent:
     """Create and test a new version; swap it in only if it passes."""
     if agent.status == "retired":
         raise ProvisioningError("cannot revise a retired agent")
@@ -187,6 +197,7 @@ def revise(s: Session, tenant: Tenant, agent: Agent, *, actor_agent: Agent | Non
         monthly_budget_usd=monthly_budget_usd if monthly_budget_usd is not None else agent.monthly_budget_usd,
         can_provision=agent.can_provision_agents, creator=actor_agent, lineage_id=agent.lineage_id,
         version=agent.version + 1, replacing_agent_id=agent.id, baseline_tools=list(agent.tools or []),
+        trace=trace,
     )
     if new.status == "active":
         agent.status = "retired"
@@ -195,11 +206,11 @@ def revise(s: Session, tenant: Tenant, agent: Agent, *, actor_agent: Agent | Non
     return new
 
 
-def replace_failed(s: Session, tenant: Tenant, agent: Agent, actor_agent: Agent | None) -> Agent:
+def replace_failed(s: Session, tenant: Tenant, agent: Agent, actor_agent: Agent | None, trace=None) -> Agent:
     """Replace a suspended/failed agent with a fresh tested instance of the same spec."""
     if agent.status not in ("suspended",):
         raise ProvisioningError("only suspended agents can be replaced")
-    return revise(s, tenant, agent, actor_agent=actor_agent)
+    return revise(s, tenant, agent, actor_agent=actor_agent, trace=trace)
 
 
 def tenant_of(s: Session) -> Tenant:

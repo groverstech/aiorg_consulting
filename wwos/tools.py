@@ -25,6 +25,8 @@ class ToolContext:
     tenant: Tenant
     agent: Agent | None  # None when the owner executes an approved action
     task_id: str | None = None
+    trace: Any = None  # RunTrace of the enclosing run; nested model spend is recorded on it
+    depth: int = 0  # delegation depth of the current task
 
     @property
     def actor(self) -> str:
@@ -54,6 +56,44 @@ def tool(name: str, description: str, properties: dict[str, Any], required: list
     return deco
 
 
+class ToolArgumentError(ValueError):
+    pass
+
+
+_JSON_TYPES = {"string": str, "integer": int, "number": (int, float), "array": list, "object": dict,
+               "boolean": bool}
+
+
+def validate_args(name: str, args: Any) -> dict:
+    """Reject anything the tool schema does not allow. The model controls tool arguments, so
+    unknown keys must never reach a handler (they could set internal keyword parameters)."""
+    if name not in TOOLS:
+        raise ToolArgumentError(f"unknown tool {name}")
+    if not isinstance(args, dict):
+        raise ToolArgumentError("arguments must be an object")
+    schema = TOOLS[name].schema
+    props = schema["properties"]
+    extra = set(args) - set(props)
+    if extra:
+        raise ToolArgumentError(f"unexpected arguments for {name}: {sorted(extra)}")
+    missing = [k for k in schema.get("required", []) if args.get(k) in (None, "")]
+    if missing:
+        raise ToolArgumentError(f"missing required arguments for {name}: {missing}")
+    for key, value in args.items():
+        if value is None:
+            continue
+        types = props[key].get("type")
+        if types is None:
+            continue
+        allowed = tuple(t for tn in ([types] if isinstance(types, str) else types)
+                        for t in (_JSON_TYPES[tn] if isinstance(_JSON_TYPES[tn], tuple) else (_JSON_TYPES[tn],)))
+        if isinstance(value, bool) and bool not in allowed:
+            raise ToolArgumentError(f"argument {key} has the wrong type")
+        if not isinstance(value, allowed):
+            raise ToolArgumentError(f"argument {key} has the wrong type")
+    return args
+
+
 def api_name(name: str) -> str:
     """Claude tool names may not contain dots."""
     return name.replace(".", "__")
@@ -78,8 +118,10 @@ STRLIST = {"type": "array", "items": {"type": "string"}}
 @tool("crm.upsert_contact", "Create a CRM contact or return the existing one with that email.",
       {"email": S, "first_name": S, "last_name": S, "phone": S, "company": S, "source": S, "notes": S},
       ["email", "first_name"])
-def _upsert_contact(ctx: ToolContext, **a) -> dict:
-    c, created = crm.upsert_contact(ctx.session, actor=ctx.actor, **a)
+def _upsert_contact(ctx: ToolContext, email: str, first_name: str, last_name: str = "", phone: str = "",
+                    company: str | None = None, source: str = "agent", notes: str = "") -> dict:
+    c, created = crm.upsert_contact(ctx.session, actor=ctx.actor, email=email, first_name=first_name,
+                                    last_name=last_name, phone=phone, company=company, source=source, notes=notes)
     return {"contact_id": c.id, "created": created, "lifecycle": c.lifecycle}
 
 
@@ -94,9 +136,9 @@ def _find_contact(ctx: ToolContext, email: str) -> dict:
 
 @tool("crm.create_deal", "Open a deal for a contact.",
       {"contact_id": S, "title": S, "value": NUM, "currency": S}, ["contact_id", "title"])
-def _create_deal(ctx: ToolContext, **a) -> dict:
-    d = crm.create_deal(ctx.session, actor=ctx.actor,
-                        owner_agent_id=ctx.agent.id if ctx.agent else None, **a)
+def _create_deal(ctx: ToolContext, contact_id: str, title: str, value="0", currency: str = "USD") -> dict:
+    d = crm.create_deal(ctx.session, actor=ctx.actor, owner_agent_id=ctx.agent.id if ctx.agent else None,
+                        contact_id=contact_id, title=title, value=value, currency=currency)
     return {"deal_id": d.id, "stage": d.stage}
 
 
@@ -109,8 +151,10 @@ def _move_deal(ctx: ToolContext, deal_id: str, stage: str) -> dict:
 
 @tool("crm.log_activity", "Record a note, call or meeting against a contact or deal.",
       {"kind": S, "summary": S, "contact_id": S, "deal_id": S}, ["kind", "summary"])
-def _log_activity(ctx: ToolContext, **a) -> dict:
-    act = crm.log_activity(ctx.session, actor=ctx.actor, **a)
+def _log_activity(ctx: ToolContext, kind: str, summary: str, contact_id: str | None = None,
+                  deal_id: str | None = None) -> dict:
+    act = crm.log_activity(ctx.session, actor=ctx.actor, kind=kind, summary=summary, contact_id=contact_id,
+                           deal_id=deal_id)
     ctx.session.flush()
     return {"activity_id": act.id}
 
@@ -132,15 +176,20 @@ def _docs_generate(ctx: ToolContext, kind: str, title: str, data: dict, deal_id:
 @tool("comms.draft_email", "Save an email draft to the outbox (idempotent by key).",
       {"idempotency_key": S, "to": S, "subject": S, "body": S, "contact_id": S},
       ["idempotency_key", "to", "subject", "body"])
-def _draft_email(ctx: ToolContext, **a) -> dict:
-    msg, created = comms.draft_email(ctx.session, actor=ctx.actor, **a)
+def _draft_email(ctx: ToolContext, idempotency_key: str, to: str, subject: str, body: str,
+                 contact_id: str | None = None) -> dict:
+    # Agent-supplied keys are namespaced so they can never collide with system keys.
+    key = f"agent:{ctx.agent.id}:{idempotency_key}" if ctx.agent else idempotency_key
+    msg, created = comms.draft_email(ctx.session, actor=ctx.actor, idempotency_key=key, to=to, subject=subject,
+                                     body=body, contact_id=contact_id)
     return {"message_id": msg.id, "status": msg.status, "created": created}
 
 
 @tool("comms.send_email", "Send a drafted outbound email. May require owner approval by policy.",
       {"message_id": S}, ["message_id"])
 def _send_email(ctx: ToolContext, message_id: str) -> dict:
-    msg = comms.deliver(ctx.session, message_id)
+    # Queues the message; the outbox dispatcher sends it after this transaction commits.
+    msg = comms.request_send(ctx.session, message_id)
     return {"message_id": msg.id, "status": msg.status}
 
 # ---------------------------------------------------------------- Finance / legal (owner-gated)
@@ -150,7 +199,10 @@ def _send_email(ctx: ToolContext, message_id: str) -> dict:
       {"client_name": S, "invoice_number": S, "line_items": {"type": "array", "items": {"type": "object"}},
        "currency": S, "due_days": {"type": "integer"}, "tax_rate": NUM, "deal_id": S},
       ["client_name", "invoice_number", "line_items", "currency", "due_days"])
-def _create_invoice(ctx: ToolContext, deal_id: str | None = None, **data) -> dict:
+def _create_invoice(ctx: ToolContext, client_name: str, invoice_number: str, line_items: list, currency: str,
+                    due_days: int, tax_rate="0", deal_id: str | None = None) -> dict:
+    data = {"client_name": client_name, "invoice_number": invoice_number, "line_items": line_items,
+            "currency": currency, "due_days": due_days, "tax_rate": tax_rate}
     doc = documents.generate(ctx.session, kind="invoice", title=f"Invoice {data['invoice_number']}",
                              data=data, deal_id=deal_id, actor=ctx.actor)
     return {"document_id": doc.id, "total": doc.data.get("total")}
@@ -158,9 +210,10 @@ def _create_invoice(ctx: ToolContext, deal_id: str | None = None, **data) -> dic
 
 @tool("finance.transfer_funds", "Request a financial transfer. ALWAYS requires owner approval.",
       {"amount": NUM, "currency": S, "payee": S, "reference": S}, ["amount", "currency", "payee"])
-def _transfer_funds(ctx: ToolContext, **a) -> dict:
+def _transfer_funds(ctx: ToolContext, amount, currency: str, payee: str, reference: str = "") -> dict:
     # No banking integration is connected; approval authorises the owner to execute it.
-    return {"status": "authorised_for_manual_execution", "detail": a,
+    return {"status": "authorised_for_manual_execution",
+            "detail": {"amount": str(amount), "currency": currency, "payee": payee, "reference": reference},
             "note": "No payment rail is integrated. The owner executes the transfer in their bank."}
 
 
@@ -173,8 +226,9 @@ def _sign_agreement(ctx: ToolContext, document_id: str, counterparty: str) -> di
 
 @tool("compliance.submit_filing", "Request a regulatory filing. ALWAYS requires owner approval.",
       {"filing": S, "authority": S, "summary": S}, ["filing", "authority"])
-def _submit_filing(ctx: ToolContext, **a) -> dict:
-    return {"status": "authorised_for_submission", "detail": a}
+def _submit_filing(ctx: ToolContext, filing: str, authority: str, summary: str = "") -> dict:
+    return {"status": "authorised_for_submission",
+            "detail": {"filing": filing, "authority": authority, "summary": summary}}
 
 
 @tool("budget.request_increase", "Request an increase to the organisation's monthly AI budget (owner approval).",
@@ -209,10 +263,13 @@ def _agents_list(ctx: ToolContext) -> dict:
 @tool("agents.provision", "Create, test and activate a new specialist agent within budget and your own permissions.",
       {"name": S, "role": S, "department_code": S, "instructions": S, "tools": STRLIST, "model": S,
        "monthly_budget_usd": NUM}, ["name", "role", "department_code", "instructions", "tools"])
-def _agents_provision(ctx: ToolContext, **a) -> dict:
+def _agents_provision(ctx: ToolContext, name: str, role: str, department_code: str, instructions: str,
+                      tools: list[str], model: str | None = None, monthly_budget_usd=None) -> dict:
     from .agents import lifecycle
 
-    agent = lifecycle.provision(ctx.session, ctx.tenant, creator=ctx.agent, **a)
+    agent = lifecycle.provision(ctx.session, ctx.tenant, creator=ctx.agent, name=name, role=role,
+                                department_code=department_code, instructions=instructions, tools=tools,
+                                model=model, monthly_budget_usd=monthly_budget_usd or "10", trace=ctx.trace)
     return {"agent_id": agent.id, "status": agent.status, "reason": agent.status_reason}
 
 
@@ -229,13 +286,15 @@ def _agents_suspend(ctx: ToolContext, agent_id: str, reason: str) -> dict:
 
 @tool("agents.revise", "Publish a new tested version of an agent with improved instructions, tools or model.",
       {"agent_id": S, "instructions": S, "tools": STRLIST, "model": S, "monthly_budget_usd": NUM}, ["agent_id"])
-def _agents_revise(ctx: ToolContext, agent_id: str, **a) -> dict:
+def _agents_revise(ctx: ToolContext, agent_id: str, instructions: str | None = None, tools: list[str] | None = None,
+                   model: str | None = None, monthly_budget_usd=None) -> dict:
     from .agents import lifecycle
 
     target = ctx.session.get(Agent, agent_id)
     if target is None:
         raise ValueError("agent not found")
-    new = lifecycle.revise(ctx.session, ctx.tenant, target, actor_agent=ctx.agent, **a)
+    new = lifecycle.revise(ctx.session, ctx.tenant, target, actor_agent=ctx.agent, instructions=instructions,
+                           tools=tools, model=model, monthly_budget_usd=monthly_budget_usd, trace=ctx.trace)
     return {"agent_id": new.id, "version": new.version, "status": new.status, "reason": new.status_reason}
 
 
@@ -246,8 +305,11 @@ def _agents_replace(ctx: ToolContext, agent_id: str) -> dict:
     target = ctx.session.get(Agent, agent_id)
     if target is None:
         raise ValueError("agent not found")
-    new = lifecycle.replace_failed(ctx.session, ctx.tenant, target, ctx.agent)
+    new = lifecycle.replace_failed(ctx.session, ctx.tenant, target, ctx.agent, trace=ctx.trace)
     return {"agent_id": new.id, "status": new.status}
+
+
+MAX_DELEGATION_DEPTH = 3
 
 
 @tool("tasks.delegate", "Assign work to another agent; it runs asynchronously.",
@@ -258,10 +320,20 @@ def _delegate(ctx: ToolContext, agent_id: str, instruction: str, idempotency_key
     target = ctx.session.get(Agent, agent_id)
     if target is None or target.status != "active":
         raise ValueError("target agent not found or not active")
+    if ctx.agent is not None and target.lineage_id == ctx.agent.lineage_id:
+        raise ValueError("an agent cannot delegate to itself")
+    if target.can_provision_agents and not (ctx.agent and ctx.agent.can_provision_agents):
+        # Prevents laundering authority: only provisioning-capable agents (or the owner) can task them.
+        raise PermissionError("only the owner or a provisioning-capable agent can assign work to this agent")
+    depth = ctx.depth + 1
+    if depth > MAX_DELEGATION_DEPTH:
+        raise ValueError(f"delegation chain too deep (max {MAX_DELEGATION_DEPTH})")
     digest = hashlib.sha256(instruction.encode()).hexdigest()[:16]
-    key = idempotency_key or f"delegate:{ctx.task_id}:{agent_id}:{digest}"
+    suffix = idempotency_key or f"{ctx.task_id}:{agent_id}:{digest}"
+    key = f"agent:{ctx.agent.id if ctx.agent else 'owner'}:delegate:{suffix}"
     task, created = workflows.enqueue(ctx.session, kind="agent_run", idempotency_key=key,
-                                      payload={"instruction": instruction, "delegated_by": ctx.actor},
+                                      payload={"instruction": instruction, "delegated_by": ctx.actor,
+                                               "depth": depth},
                                       agent_id=agent_id)
     return {"task_id": task.id, "created": created}
 

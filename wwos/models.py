@@ -53,6 +53,26 @@ class ApiKey(Base, TenantScoped):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class WebSession(Base, TenantScoped):
+    """Dashboard login session. The cookie holds a random token; only its hash is stored."""
+
+    __tablename__ = "web_sessions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SystemStatus(Base):
+    """Platform-level key/value status shared across processes (e.g. last QA scan)."""
+
+    __tablename__ = "system_status"
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class Department(Base, TenantScoped):
     __tablename__ = "departments"
     __table_args__ = (UniqueConstraint("tenant_id", "code"),)
@@ -118,6 +138,8 @@ class Task(Base, TenantScoped):
     workflow_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Changes on every claim; a worker may only commit results while it still holds the token.
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -231,9 +253,11 @@ class OutboundMessage(Base, TenantScoped):
     subject: Mapped[str] = mapped_column(String(300))
     body: Mapped[str] = mapped_column(Text)
     contact_id: Mapped[str | None] = mapped_column(ForeignKey("contacts.id"), nullable=True)
-    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)  # draft|pending_approval|queued|sent|failed
+    # draft -> pending_approval -> queued -> sending -> sent | failed | rejected | unknown
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str] = mapped_column(Text, default="")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str] = mapped_column(String(120), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
