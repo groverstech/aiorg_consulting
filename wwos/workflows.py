@@ -257,7 +257,7 @@ def claim_next(now=None, tenant_id: str | None = None) -> tuple[str, str, str] |
     """Atomically claim one due task. Returns (task_id, tenant_id, claim_token)."""
     cfg = get_settings()
     now = now or utcnow()
-    with system_session() as s:
+    with system_session(immediate=True) as s:
         q = select(Task.id, Task.tenant_id, Task.status).where(
             or_(
                 (Task.status == "queued") & (Task.run_after <= now),

@@ -1,9 +1,36 @@
 from __future__ import annotations
 
+import ipaddress
+import socket
+
 import pytest
 
 from wwos import comms, db, llm
 from wwos.llm import LLMResult
+
+
+_real_connect = socket.socket.connect
+
+
+def _guarded_connect(sock, address):
+    """No test may reach the outside world: only loopback and local (unix) sockets are allowed.
+    This makes accidental real e-mail or paid AI calls impossible from the test suite."""
+    if sock.family in (socket.AF_INET, socket.AF_INET6):
+        host = address[0]
+        try:
+            ok = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            ok = host == "localhost"
+        if not ok:
+            raise ConnectionRefusedError(f"tests may not connect to non-local address {host!r}")
+    return _real_connect(sock, address)
+
+
+@pytest.fixture(autouse=True)
+def no_external_network(monkeypatch):
+    monkeypatch.setattr(socket.socket, "connect", _guarded_connect)
+    monkeypatch.setenv("WWOS_EMAIL_TRANSPORT", "outbox")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
 @pytest.fixture(autouse=True)

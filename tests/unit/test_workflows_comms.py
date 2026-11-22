@@ -137,7 +137,7 @@ def test_email_delivery_is_exactly_once_and_failures_recorded(tenant):
 
     class Boom:
         def send(self, **kw):
-            raise ConnectionError("smtp down")
+            raise comms.DeliveryRejected("smtp down", retryable=True)
 
     with tenant_session(tid) as s:
         m, _ = comms.draft_email(s, idempotency_key="e1", to="a@b.com", subject="Hi", body="Body")

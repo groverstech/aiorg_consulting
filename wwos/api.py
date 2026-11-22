@@ -271,6 +271,25 @@ def list_messages(s: Session = Depends(viewer_session)) -> list[dict]:
             for m in s.scalars(select(OutboundMessage).order_by(OutboundMessage.created_at.desc()))]
 
 
+class ResolveIn(BaseModel):
+    delivered: bool
+
+
+@app.post("/api/messages/{message_id}/resolve")
+def resolve_message(message_id: str, body: ResolveIn, p: Principal = Depends(require("owner")),
+                    s: Session = Depends(owner_session)) -> dict:
+    """Reconcile an email whose delivery outcome is unknown (or that failed): confirm it was
+    delivered, or re-queue it once (same Message-ID). Owner only: a resend speaks for the firm."""
+    from . import comms
+
+    _404(s.get(OutboundMessage, message_id), "message")
+    try:
+        m = comms.resolve(s, message_id, delivered=body.delivered, actor=f"owner:{p.key_name}")
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return {"id": m.id, "status": m.status}
+
+
 # ---------------------------------------------------------------- agents
 
 AGENT_FIELDS = ("id", "lineage_id", "version", "name", "role", "department_id", "model", "tools", "status",

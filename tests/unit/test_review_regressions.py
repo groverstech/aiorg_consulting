@@ -368,7 +368,7 @@ def test_email_retries_back_off(tenant):
 
     class Boom:
         def send(self, **kw):
-            raise ConnectionError("down")
+            raise comms.DeliveryRejected("down", retryable=True)
 
     with tenant_session(tid) as s:
         m, _ = comms.draft_email(s, idempotency_key="b", to="a@b.com", subject="s", body="b")

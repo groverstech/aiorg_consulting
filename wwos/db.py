@@ -165,13 +165,17 @@ def _guard_tenant_writes(session: Session, _ctx, _instances) -> None:
 
 
 @contextmanager
-def tenant_session(tenant_id: str) -> Iterator[Session]:
+def tenant_session(tenant_id: str, immediate: bool = False) -> Iterator[Session]:
+    """``immediate=True`` (short read-then-write units such as outbox state changes) takes the SQLite
+    write lock at BEGIN so concurrent writers queue instead of deadlocking. No effect on PostgreSQL."""
     if not tenant_id:
         raise TenantIsolationError("tenant_session requires a tenant id")
     from . import budget_guard
 
     session = _factory()()
     session.info["tenant_id"] = tenant_id
+    if immediate:
+        session.connection(execution_options={"sqlite_immediate": True})
     try:
         yield session
         session.commit()
@@ -186,8 +190,10 @@ def tenant_session(tenant_id: str) -> Iterator[Session]:
 
 
 @contextmanager
-def system_session() -> Iterator[Session]:
+def system_session(immediate: bool = False) -> Iterator[Session]:
     session = _factory()()
+    if immediate:
+        session.connection(execution_options={"sqlite_immediate": True})
     try:
         yield session
         session.commit()

@@ -52,6 +52,9 @@ class Settings:
     smtp_user: str = field(default_factory=lambda: _env("WWOS_SMTP_USER", ""))
     smtp_password: str = field(default_factory=lambda: _env("WWOS_SMTP_PASSWORD", ""))
     smtp_from: str = field(default_factory=lambda: _env("WWOS_SMTP_FROM", ""))
+    # starttls (port 587) | ssl (implicit TLS, port 465) | none (local testing only; refused in production)
+    smtp_security: str = field(default_factory=lambda: _env("WWOS_SMTP_SECURITY", "starttls"))
+    smtp_timeout_seconds: float = field(default_factory=lambda: float(_env("WWOS_SMTP_TIMEOUT_SECONDS", "30")))
     task_max_attempts: int = field(default_factory=lambda: int(_env("WWOS_TASK_MAX_ATTEMPTS", "4")))
     task_lease_seconds: int = field(default_factory=lambda: int(_env("WWOS_TASK_LEASE_SECONDS", "900")))
     # Grants access to /health/details (cross-tenant queue counts). Empty = endpoint disabled.
