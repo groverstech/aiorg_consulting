@@ -68,3 +68,40 @@ class Settings:
 
 def get_settings() -> Settings:
     return Settings()
+
+
+class ConfigurationError(RuntimeError):
+    pass
+
+
+def production_problems(cfg: Settings | None = None) -> list[str]:
+    """Unsafe settings that production must refuse. Empty list = acceptable."""
+    cfg = cfg or get_settings()
+    problems = []
+    if not cfg.database_url.startswith("postgresql"):
+        problems.append("WWOS_DATABASE_URL must be PostgreSQL in production (SQLite is single-process, dev only)")
+    if cfg.llm_provider not in ("anthropic", "offline"):
+        problems.append("WWOS_LLM_PROVIDER must be 'anthropic' or 'offline'")
+    if cfg.email_transport == "smtp":
+        if cfg.smtp_security == "none":
+            problems.append("WWOS_SMTP_SECURITY=none is not allowed in production")
+        if not (cfg.smtp_host and cfg.smtp_from):
+            problems.append("WWOS_SMTP_HOST and WWOS_SMTP_FROM are required for SMTP")
+    if not cfg.cookie_secure:
+        problems.append("WWOS_COOKIE_SECURE must be true in production (dashboard served over HTTPS)")
+    if not cfg.public_origin.startswith("https://"):
+        problems.append("WWOS_PUBLIC_ORIGIN must be the https:// URL of the dashboard")
+    if cfg.admin_token and len(cfg.admin_token) < 32:
+        problems.append("WWOS_ADMIN_TOKEN must be at least 32 characters (or empty to disable)")
+    if cfg.org_monthly_budget_usd <= 0 or cfg.max_agent_budget_usd <= 0:
+        problems.append("budget ceilings must be positive")
+    return problems
+
+
+def assert_safe_for_environment() -> None:
+    cfg = get_settings()
+    if cfg.environment != "production":
+        return
+    problems = production_problems(cfg)
+    if problems:
+        raise ConfigurationError("refusing to start in production: " + "; ".join(problems))

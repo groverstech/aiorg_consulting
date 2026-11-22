@@ -21,7 +21,8 @@ DEPARTMENTS = [
     ("finance", "Finance", "Invoicing, cost control and financial reporting."),
     ("marketing", "Marketing", "Generates and nurtures demand."),
     ("legal", "Legal & Compliance", "Prepares agreements and filings for owner signature."),
-    ("operations", "Operations", "Keeps workflows running and monitors service health."),
+    ("operations", "Operations & People", "Keeps workflows running, monitors service health and coordinates "
+     "people operations (contractor and staff onboarding, scheduling)."),
     ("qa", "Quality Assurance", "Independently verifies the work of every other department."),
 ]
 
@@ -33,7 +34,9 @@ MGMT = ["agents.list", "agents.provision", "agents.suspend", "agents.revise", "a
 
 FOUNDING_AGENTS = [
     dict(name="CEO", role="ceo", department_code="executive", can_provision=True, monthly_budget_usd="60",
-         tools=MGMT + ["budget.status", "budget.request_increase", "crm.pipeline_summary", "deals.get"],
+         tools=MGMT + ["budget.status", "budget.request_increase", "crm.pipeline_summary", "deals.get",
+                       "objectives.add_task", "objectives.status", "partners.list", "partners.register",
+                       "partners.prepare_brief", "partners.send_brief"],
          instructions=(
              "You run White Waters Consulting Group day to day on behalf of the owner. Review the pipeline, "
              "budget and agent workforce, decide priorities, delegate work to department agents with "
@@ -46,7 +49,7 @@ FOUNDING_AGENTS = [
              "cause, then replace it or publish an improved version (agents.revise) that must pass automated "
              "acceptance tests. Choose the least expensive approved model that does the job reliably.")),
     dict(name="Sales Lead", role="sales", department_code="sales", monthly_budget_usd="60",
-         tools=CRM_ALL + ["docs.generate", "comms.draft_email", "comms.send_email"],
+         tools=CRM_ALL + ["docs.generate", "comms.draft_email", "comms.send_email", "partners.list"],
          instructions=(
              "You qualify inbound leads, maintain accurate CRM records, prepare proposals and correspond with "
              "prospects professionally. Never promise prices, dates or terms that are not in the CRM or an "
@@ -73,12 +76,13 @@ FOUNDING_AGENTS = [
              "You prepare statements of work and agreements and route anything binding or regulatory to the "
              "owner for signature or submission. You never sign or file on your own authority.")),
     dict(name="Operations Manager", role="operations", department_code="operations", monthly_budget_usd="30",
-         tools=["crm.pipeline_summary", "budget.status", "agents.list", "tasks.delegate"],
+         tools=["crm.pipeline_summary", "budget.status", "agents.list", "tasks.delegate", "objectives.status"],
          instructions=(
              "You monitor workflow throughput, stuck tasks and service health, and delegate follow-ups to the "
              "responsible department agent.")),
     dict(name="QA Auditor", role="qa", department_code="qa", monthly_budget_usd="30",
-         tools=["agents.list", "budget.status", "crm.pipeline_summary", "deals.get"],
+         tools=["agents.list", "budget.status", "crm.pipeline_summary", "deals.get", "objectives.qa_verdict",
+                "objectives.status"],
          instructions=(
              "You independently verify other departments' work: CRM accuracy, document correctness, budget "
              "compliance and agent behaviour. Report defects with evidence; you do not fix them yourself.")),

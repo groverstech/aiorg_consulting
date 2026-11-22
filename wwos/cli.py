@@ -9,7 +9,20 @@ import sys
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="wwos", description="White Waters AI Business Operating System")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("init-db", help="create database tables")
+    sub.add_parser("init-db", help="development: bring the database to the latest schema")
+    dbp = sub.add_parser("db", help="schema migrations (production-safe)")
+    dbsub = dbp.add_subparsers(dest="db_cmd", required=True)
+    dbsub.add_parser("status", help="current/head revision, pending revisions and drift")
+    up = dbsub.add_parser("upgrade", help="apply pending migrations")
+    up.add_argument("--to", default="head")
+    up.add_argument("--backup-confirmed", action="store_true",
+                    help="PostgreSQL: confirm a backup (Cloud SQL on-demand backup or pg_dump) was taken")
+    up.add_argument("--allow-destructive", action="store_true", help="permit revisions that can lose data")
+    down = dbsub.add_parser("downgrade", help="roll back schema (destructive)")
+    down.add_argument("to")
+    down.add_argument("--backup-confirmed", action="store_true")
+    down.add_argument("--allow-destructive", action="store_true")
+    dbsub.add_parser("check", help="exit 1 unless the schema is at head with no drift")
     t = sub.add_parser("create-tenant", help="create a tenant with departments and founding agents")
     t.add_argument("name")
     t.add_argument("--budget", default=None, help="monthly AI budget in USD")
@@ -38,6 +51,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "init-db":
         db.init_db()
         print("database ready")
+    elif args.cmd == "db":
+        from . import migrate
+
+        if args.db_cmd == "status":
+            print(f"current={migrate.current()} head={migrate.head()} pending={migrate.pending()}")
+            if migrate.current() is not None:
+                d = migrate.drift()
+                print("drift: none" if not d else f"drift: {d}")
+        elif args.db_cmd == "upgrade":
+            try:
+                r = migrate.upgrade(args.to, backup_confirmed=args.backup_confirmed,
+                                    allow_destructive=args.allow_destructive)
+            except migrate.MigrationError as e:
+                print(f"refused: {e}", file=sys.stderr)
+                return 2
+            print(f"{r.before} -> {r.after}; applied={r.applied}; backup={r.backup}")
+        elif args.db_cmd == "downgrade":
+            try:
+                print(migrate.downgrade(args.to, allow_destructive=args.allow_destructive,
+                                        backup_confirmed=args.backup_confirmed))
+            except migrate.MigrationError as e:
+                print(f"refused: {e}", file=sys.stderr)
+                return 2
+        elif args.db_cmd == "check":
+            ok = migrate.current() == migrate.head() and not migrate.drift()
+            print("schema OK" if ok else f"schema NOT OK: current={migrate.current()} head={migrate.head()}")
+            return 0 if ok else 1
     elif args.cmd == "create-tenant":
         from .bootstrap import create_tenant
 
@@ -49,8 +89,10 @@ def main(argv: list[str] | None = None) -> int:
 
         print(create_api_key(args.tenant_id, args.name, args.role))
     elif args.cmd == "worker":
+        from .config import assert_safe_for_environment
         from .workflows import drain, run_worker
 
+        assert_safe_for_environment()
         db.init_db()
         n = drain() if args.once else run_worker(poll_seconds=args.poll, scheduled=not args.no_schedule)
         print(f"processed {n} task(s)")

@@ -295,3 +295,68 @@ class OutboundMessage(Base, TenantScoped):
     created_by: Mapped[str] = mapped_column(String(120), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+# ---------------------------------------------------------------- Partners (India / international)
+
+
+class Partner(Base, TenantScoped):
+    """An external delivery partner (Indian partner firm or international service provider).
+
+    ``nda_status`` is a legal fact attested only by the owner ("on_file"); agents can register
+    prospective partners but can never mark an NDA as signed. Partners only ever receive
+    anonymised briefs, never client identities (see partners.py).
+    """
+
+    __tablename__ = "partners"
+    __table_args__ = (UniqueConstraint("tenant_id", "name"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(200))
+    region: Mapped[str] = mapped_column(String(20))  # india | international
+    services: Mapped[str] = mapped_column(Text, default="")
+    contact_email: Mapped[str] = mapped_column(String(254))
+    email_domain: Mapped[str] = mapped_column(String(200), index=True)
+    nda_status: Mapped[str] = mapped_column(String(20), default="none")  # none | on_file
+    nda_attested_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="prospect")  # prospect | active | inactive
+    created_by: Mapped[str] = mapped_column(String(120), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ---------------------------------------------------------------- CEO objectives
+
+
+class Objective(Base, TenantScoped):
+    """A business objective given to the CEO agent, decomposed into department tasks."""
+
+    __tablename__ = "objectives"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text)
+    deal_id: Mapped[str | None] = mapped_column(ForeignKey("deals.id"), nullable=True)
+    # planning -> in_progress -> reporting -> completed | failed
+    status: Mapped[str] = mapped_column(String(20), default="planning", index=True)
+    report_document_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    failure_reason: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(120), default="owner")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ObjectiveTask(Base, TenantScoped):
+    __tablename__ = "objective_tasks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    objective_id: Mapped[str] = mapped_column(ForeignKey("objectives.id"), index=True)
+    department_code: Mapped[str] = mapped_column(String(40))
+    title: Mapped[str] = mapped_column(String(200))
+    instruction: Mapped[str] = mapped_column(Text)
+    agent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # pending -> running -> awaiting_qa -> passed | (retry) | failed
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    reassigned: Mapped[bool] = mapped_column(Boolean, default=False)
+    result_summary: Mapped[str] = mapped_column(Text, default="")
+    qa_verdict: Mapped[str | None] = mapped_column(String(10), nullable=True)  # pass | fail
+    qa_notes: Mapped[str] = mapped_column(Text, default="")
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

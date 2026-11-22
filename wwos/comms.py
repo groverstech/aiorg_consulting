@@ -213,6 +213,11 @@ def request_send(s: Session, message_id: str) -> OutboundMessage:
         return msg  # idempotent
     if msg.status not in SENDABLE:
         raise ValueError(f"message is {msg.status} and cannot be sent")
+    from .partners import partner_for_address
+
+    partner = partner_for_address(s, msg.to_address)
+    if partner is not None and partner.nda_status != "on_file":
+        raise ValueError(f"no NDA on file for partner {partner.name}; nothing may be sent to them")
     msg.status = "queued"
     return msg
 

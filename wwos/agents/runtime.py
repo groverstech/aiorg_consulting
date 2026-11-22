@@ -80,7 +80,7 @@ def execute_tool(ctx: ToolContext, name: str, args: dict, trace: RunTrace | None
         # Strict schema check BEFORE the approval gate, so an approved request can always execute and
         # no hidden keyword argument can ever reach a handler.
         args = validate_args(name, args)
-        category = approval_category(name, args)
+        category = approval_category(name, args, s)
         if category and agent is not None:
             req = ApprovalRequest(category=category, action=name, params=args, requested_by=agent.name,
                                   reason=str(args.get("justification", "")), task_id=ctx.task_id)

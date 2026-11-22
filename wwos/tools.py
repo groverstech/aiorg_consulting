@@ -360,6 +360,83 @@ def _delegate(ctx: ToolContext, agent_id: str, instruction: str, idempotency_key
     return {"task_id": task.id, "created": created}
 
 
+# ---------------------------------------------------------------- Partners (confidentiality-controlled)
+
+
+@tool("partners.list", "List registered partner firms (India / international) and their NDA status.", {})
+def _partners_list(ctx: ToolContext) -> dict:
+    from .models import Partner
+
+    rows = ctx.session.scalars(select(Partner).order_by(Partner.name)).all()
+    return {"partners": [{"id": p.id, "name": p.name, "region": p.region, "services": p.services,
+                          "nda_status": p.nda_status, "status": p.status} for p in rows]}
+
+
+@tool("partners.register", "Record a prospective partner firm. NDA status can only be set by the owner.",
+      {"name": S, "region": S, "contact_email": S, "services": S}, ["name", "region", "contact_email"])
+def _partners_register(ctx: ToolContext, name: str, region: str, contact_email: str, services: str = "") -> dict:
+    from . import partners
+
+    p = partners.register(ctx.session, name=name, region=region, contact_email=contact_email,
+                          services=services, actor=ctx.actor)
+    return {"partner_id": p.id, "nda_status": p.nda_status}
+
+
+@tool("partners.prepare_brief", "Prepare an anonymised work brief for a partner (client identity removed).",
+      {"partner_id": S, "deal_id": S, "scope": S}, ["partner_id", "deal_id", "scope"])
+def _partners_brief(ctx: ToolContext, partner_id: str, deal_id: str, scope: str) -> dict:
+    from . import partners
+
+    doc = partners.prepare_brief(ctx.session, partner_id=partner_id, deal_id=deal_id, scope=scope, actor=ctx.actor)
+    return {"document_id": doc.id, "client_code": doc.data["client_code"]}
+
+
+@tool("partners.send_brief", "Send a prepared partner brief to the partner. ALWAYS requires owner approval.",
+      {"partner_id": S, "document_id": S}, ["partner_id", "document_id"])
+def _partners_send(ctx: ToolContext, partner_id: str, document_id: str) -> dict:
+    from .models import Document, Partner
+
+    p = ctx.session.get(Partner, partner_id)
+    doc = ctx.session.get(Document, document_id)
+    if p is None or doc is None or doc.kind != "partner_brief" or doc.data.get("partner_name") != p.name:
+        raise ValueError("partner or matching partner brief not found")
+    msg, _ = comms.draft_email(ctx.session, idempotency_key=f"partner-brief:{doc.id}", to=p.contact_email,
+                               subject=f"Work brief {doc.data['client_code']}", body=doc.markdown, actor=ctx.actor)
+    comms.request_send(ctx.session, msg.id)
+    return {"message_id": msg.id, "status": msg.status}
+
+# ---------------------------------------------------------------- CEO objectives
+
+
+@tool("objectives.add_task", "Add a department task to an objective you are planning.",
+      {"objective_id": S, "department_code": S, "title": S, "instruction": S, "agent_id": S},
+      ["objective_id", "department_code", "title", "instruction"])
+def _obj_add(ctx: ToolContext, objective_id: str, department_code: str, title: str, instruction: str,
+             agent_id: str | None = None) -> dict:
+    from . import objectives
+
+    t = objectives.add_task(ctx.session, objective_id=objective_id, department_code=department_code, title=title,
+                            instruction=instruction, agent_id=agent_id, actor=ctx.actor)
+    return {"objective_task_id": t.id}
+
+
+@tool("objectives.qa_verdict", "Record your QA verdict ('pass' or 'fail') with notes on an objective task.",
+      {"objective_task_id": S, "verdict": S, "notes": S}, ["objective_task_id", "verdict", "notes"])
+def _obj_verdict(ctx: ToolContext, objective_task_id: str, verdict: str, notes: str) -> dict:
+    from . import objectives
+
+    t = objectives.record_verdict(ctx.session, objective_task_id=objective_task_id, verdict=verdict, notes=notes,
+                                  actor=ctx.actor)
+    return {"objective_task_id": t.id, "verdict": t.qa_verdict}
+
+
+@tool("objectives.status", "Status of an objective and its tasks.", {"objective_id": S}, ["objective_id"])
+def _obj_status(ctx: ToolContext, objective_id: str) -> dict:
+    from . import objectives
+
+    return objectives.summary(ctx.session, objective_id)
+
+
 @tool("deals.get", "Fetch a deal by id.", {"deal_id": S}, ["deal_id"])
 def _deal_get(ctx: ToolContext, deal_id: str) -> dict:
     d = ctx.session.get(Deal, deal_id)

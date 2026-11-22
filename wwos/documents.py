@@ -23,6 +23,8 @@ REQUIRED_FIELDS: dict[str, list[str]] = {
     "sow": ["client_name", "deliverables", "milestones", "fee", "currency", "start_date"],
     "invoice": ["client_name", "invoice_number", "line_items", "currency", "due_days"],
     "status_report": ["client_name", "period", "progress", "risks", "next_steps"],
+    "partner_brief": ["partner_name", "client_code", "scope", "region"],
+    "executive_report": ["objective_title", "status", "summary", "spend"],  # tasks may legitimately be empty
 }
 
 COMPANY = {

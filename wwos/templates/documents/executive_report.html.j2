@@ -1,0 +1,10 @@
+{% extends "_base.html.j2" %}{% set doc_kind = "Executive report" %}{% set client_name = objective_title %}
+{% block body %}
+<h1>Executive report &mdash; {{ objective_title }}</h1>
+<p class="meta">Prepared by the CEO agent for the owner. Status: {{ status }}.</p>
+<h2>Summary</h2><p>{{ summary }}</p>
+<h2>Work completed</h2><table><tr><th>Department</th><th>Task</th><th>Agent</th><th>Attempts</th><th>QA</th></tr>
+{% for t in tasks %}<tr><td>{{ t.department }}</td><td>{{ t.title }}</td><td>{{ t.agent }}</td><td>{{ t.attempts }}{% if t.reassigned %} (reassigned){% endif %}</td><td>{{ t.qa }}</td></tr>{% endfor %}</table>
+<h2>Agents created for this objective</h2><ul>{% for a in new_agents %}<li>{{ a }}</li>{% else %}<li>None</li>{% endfor %}</ul>
+<h2>AI spend on this objective</h2><p>${{ spend }}</p>
+{% endblock %}

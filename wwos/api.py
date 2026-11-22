@@ -32,6 +32,9 @@ templates.env.filters["money"] = lambda v: f"${Decimal(str(v or 0)):,.2f}"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    from .config import assert_safe_for_environment
+
+    assert_safe_for_environment()
     db.init_db()
     yield
 
@@ -290,6 +293,91 @@ def resolve_message(message_id: str, body: ResolveIn, p: Principal = Depends(req
     return {"id": m.id, "status": m.status}
 
 
+# ---------------------------------------------------------------- partners
+
+class PartnerIn(BaseModel):
+    name: str
+    region: str
+    contact_email: str
+    services: str = ""
+
+
+@app.get("/api/partners")
+def list_partners(s: Session = Depends(viewer_session)) -> list[dict]:
+    from .models import Partner
+
+    return [_row(p, "id", "name", "region", "services", "contact_email", "nda_status", "nda_attested_by", "status",
+                 "created_by", "created_at") for p in s.scalars(select(Partner).order_by(Partner.name))]
+
+
+@app.post("/api/partners", status_code=201)
+def create_partner(body: PartnerIn, p: Principal = Depends(require("owner")),
+                   s: Session = Depends(owner_session)) -> dict:
+    from . import partners
+
+    try:
+        partner = partners.register(s, actor=f"owner:{p.key_name}", **body.model_dump())
+    except partners.PartnerError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"id": partner.id, "nda_status": partner.nda_status}
+
+
+class NdaIn(BaseModel):
+    on_file: bool
+
+
+@app.post("/api/partners/{partner_id}/nda")
+def attest_nda(partner_id: str, body: NdaIn, p: Principal = Depends(require("owner")),
+               s: Session = Depends(owner_session)) -> dict:
+    """Owner attestation that a signed NDA with this partner is on file (a legal fact)."""
+    from . import partners
+
+    try:
+        partner = partners.attest_nda(s, partner_id, on_file=body.on_file, actor=f"owner:{p.key_name}")
+    except partners.PartnerError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"id": partner.id, "nda_status": partner.nda_status, "status": partner.status}
+
+
+# ---------------------------------------------------------------- CEO objectives
+
+class ObjectiveIn(BaseModel):
+    title: str
+    description: str
+    deal_id: str | None = None
+
+
+@app.post("/api/objectives", status_code=202)
+def create_objective(body: ObjectiveIn, p: Principal = Depends(require("owner")),
+                     s: Session = Depends(owner_session)) -> dict:
+    """Give the CEO agent a business objective; it plans, delegates, reviews and reports autonomously."""
+    from . import objectives
+
+    try:
+        obj = objectives.create(s, actor=f"owner:{p.key_name}", **body.model_dump())
+    except objectives.ObjectiveError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"id": obj.id, "status": obj.status}
+
+
+@app.get("/api/objectives")
+def list_objectives(s: Session = Depends(viewer_session)) -> list[dict]:
+    from .models import Objective
+
+    return [_row(o, "id", "title", "status", "deal_id", "report_document_id", "failure_reason", "created_at")
+            for o in s.scalars(select(Objective).order_by(Objective.created_at.desc()))]
+
+
+@app.get("/api/objectives/{objective_id}")
+def get_objective(objective_id: str, s: Session = Depends(viewer_session)) -> dict:
+    from . import objectives
+
+    try:
+        return objectives.summary(s, objective_id)
+    except objectives.ObjectiveError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
 # ---------------------------------------------------------------- agents
 
 AGENT_FIELDS = ("id", "lineage_id", "version", "name", "role", "department_id", "model", "tools", "status",
@@ -449,6 +537,8 @@ def _approval_preview(s: Session, r: ApprovalRequest) -> dict | None:
 
 
 def dashboard_data(s: Session) -> dict:
+    from .models import Objective as _Objective
+
     tenant = lifecycle.tenant_of(s)
     depts = {d.id: d for d in s.scalars(select(Department))}
     agents = []
@@ -470,6 +560,7 @@ def dashboard_data(s: Session) -> dict:
         "contacts": s.execute(select(func.count(Contact.id))).scalar_one(),
         "documents": list(s.scalars(select(Document).order_by(Document.created_at.desc()).limit(8))),
         "attention": list(s.scalars(select(Agent).where(Agent.status == "suspended").order_by(Agent.name))),
+        "objectives": list(s.scalars(select(_Objective).order_by(_Objective.created_at.desc()).limit(8))),
         "unknown_mail": list(s.scalars(select(OutboundMessage).where(OutboundMessage.status.in_(["unknown", "failed"])))),
     }
 

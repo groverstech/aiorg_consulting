@@ -28,6 +28,11 @@
 <button class="ok" name="decision" value="approve">Approve</button><button class="bad" name="decision" value="reject">Reject</button></form>{% endif %}</td></tr>{% endfor %}</table>
 {% else %}<p class="muted">Nothing needs your decision.</p>{% endif %}</div>
 
+<div class="card"><h2>CEO objectives</h2><table><tr><th>Objective</th><th>Status</th><th>Report</th></tr>
+{% for o in objectives %}<tr><td>{{ o.title }}</td><td><span class="pill {{ 'succeeded' if o.status == 'completed' else ('dead' if o.status == 'failed' else 'running') }}">{{ o.status }}</span></td>
+<td>{% if o.report_document_id %}<a href="/api/documents/{{ o.report_document_id }}">Executive report</a>{% endif %}</td></tr>
+{% else %}<tr><td class="muted" colspan="3">No objectives yet. Give the CEO one with POST /api/objectives.</td></tr>{% endfor %}</table></div>
+
 <div class="card"><h2>Pipeline</h2><table><tr>{% for stage in pipeline %}<th>{{ stage }}</th>{% endfor %}</tr>
 <tr>{% for stage, v in pipeline.items() %}<td>{{ v.count }} · {{ v.value|money }}</td>{% endfor %}</tr></table></div>
 

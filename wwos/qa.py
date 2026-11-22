@@ -144,7 +144,39 @@ def run() -> Report:
                 problems.append(f"invoice {d.id} total {d.data['total']} != {sub + tax}")
         rep.add("Documents: invoice arithmetic reconciles", problems)
 
-        # 8. Workflow reliability.
+        # 8. Confidentiality: partner briefs never identify the client; partner mail is always approved.
+        from .models import Partner
+
+        problems = []
+        for d in s.scalars(select(Document).where(Document.kind == "partner_brief")):
+            deal = s.get(Deal, d.deal_id) if d.deal_id else None
+            contact = s.get(Contact, deal.contact_id) if deal else None
+            idents = [contact.email, contact.first_name if len(contact.first_name) > 2 else None] if contact else []
+            if deal and deal.company_id:
+                from .models import Company
+
+                comp = s.get(Company, deal.company_id)
+                idents.append(comp.name if comp else None)
+            text = (d.markdown + d.html).lower()
+            leaked = [i for i in idents if i and i.lower() in text]
+            if leaked:
+                problems.append(f"partner brief {d.id} contains client identifiers")
+        partner_domains = {(p.tenant_id, p.email_domain): p for p in s.scalars(select(Partner))}
+        for m in s.scalars(select(OutboundMessage).where(OutboundMessage.status.in_(["queued", "sending", "sent"]))):
+            p = partner_domains.get((m.tenant_id, m.to_address.rsplit("@", 1)[-1]))
+            if p is None:
+                continue
+            if p.nda_status != "on_file":
+                problems.append(f"message {m.id} to partner {p.name} without an NDA on file")
+            approved = [a for a in s.scalars(select(ApprovalRequest).where(
+                ApprovalRequest.tenant_id == m.tenant_id, ApprovalRequest.category == "confidential_disclosure",
+                ApprovalRequest.status.in_(["approved", "executed"])))
+                if (a.params or {}).get("message_id") == m.id or (a.result or {}).get("message_id") == m.id]
+            if not approved:
+                problems.append(f"message {m.id} to partner {p.name} without an approved disclosure")
+        rep.add("Confidentiality: partner briefs anonymised, partner mail approved", problems)
+
+        # 9. Workflow reliability.
         problems = []
         dead = s.execute(select(Task.id, Task.kind, Task.last_error).where(Task.status == "dead")).all()
         problems += [f"dead task {k} {i}: {e[:120]}" for i, k, e in dead]

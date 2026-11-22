@@ -39,7 +39,7 @@ from .tools import ToolContext
 log = logging.getLogger("wwos.worker")
 
 NON_RETRYABLE = (PermanentLLMError, PermissionDenied, BudgetExceeded, crm.CRMValidationError,
-                 documents.DocumentError)
+                 documents.DocumentError, ValueError)
 
 
 def enqueue(s: Session, *, kind: str, idempotency_key: str, payload: dict[str, Any] | None = None,
@@ -417,3 +417,14 @@ def drain(max_tasks: int = 500, tenant_id: str | None = None) -> int:
     n = run_worker(max_tasks=max_tasks, stop_when_idle=True, tenant_id=tenant_id)
     comms.dispatch(tenant_id=tenant_id)
     return n
+
+
+# Objective orchestration steps (wwos/objectives.py)
+from . import objectives as _objectives  # noqa: E402
+
+HANDLERS.update({
+    "objective.plan": _objectives.plan,
+    "objective.run": _objectives.run,
+    "objective.qa": _objectives.qa,
+    "objective.report": _objectives.report,
+})

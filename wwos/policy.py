@@ -26,6 +26,7 @@ OWNER_AUTHORITY_CATEGORIES = {
     "irreversible_production": "Irreversible actions affecting production data or infrastructure",
     "business_policy": "Fundamental business policy decisions",
     "external_communication": "Outbound communication to external parties (owner policy, see ADR-006)",
+    "confidential_disclosure": "Any disclosure to a partner firm (Indian or international); always owner-approved",
 }
 
 # Tools whose execution always requires owner approval, mapped to category.
@@ -35,6 +36,7 @@ APPROVAL_REQUIRED_TOOLS = {
     "compliance.submit_filing": "regulatory_filing",
     "budget.request_increase": "budget_increase",
     "data.purge_tenant_records": "irreversible_production",
+    "partners.send_brief": "confidential_disclosure",
 }
 
 PROVISIONING_TOOLS = {"agents.provision", "agents.suspend", "agents.revise", "agents.replace"}
@@ -58,10 +60,18 @@ def check_tool_permission(agent: Agent, tool: str) -> None:
         raise PermissionDenied(f"agent {agent.name} may not manage other agents")
 
 
-def approval_category(tool: str, args: dict) -> str | None:
+def approval_category(tool: str, args: dict, session: Session | None = None) -> str | None:
     """Return the owner-authority category for this call, or None if it may run directly."""
     if tool in APPROVAL_REQUIRED_TOOLS:
         return APPROVAL_REQUIRED_TOOLS[tool]
-    if tool == "comms.send_email" and get_settings().external_email_requires_approval:
-        return "external_communication"
+    if tool == "comms.send_email":
+        if session is not None:
+            from .models import OutboundMessage
+            from .partners import partner_for_address
+
+            msg = session.get(OutboundMessage, args.get("message_id"))
+            if msg is not None and partner_for_address(session, msg.to_address) is not None:
+                return "confidential_disclosure"  # partners: always owner-approved, whatever the policy
+        if get_settings().external_email_requires_approval:
+            return "external_communication"
     return None
