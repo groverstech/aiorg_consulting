@@ -38,12 +38,13 @@ consulting firm inside hard limits set by the owner.
 | `budget.py` | Model prices, cost calculation, reporting |
 | `budget_guard.py` | Atomic reservations (row lock on PostgreSQL), lineage and org limits, exactly-once ledger, reconciliation |
 | `llm.py` | `AnthropicProvider` (Claude API, refusal fallbacks, error classes), `OfflineProvider` |
-| `agents/runtime.py` | Tool loop with budget reservation per call and all gates |
+| `agents/runtime.py` | Tool loop with budget reservation per call and all gates (Messages runtime, default) |
+| `agents/sdk_runtime.py`, `agents/budget_proxy.py` | Claude Agent SDK runtime: no built-in tools, WWOS tools via `execute_tool`, per-call budget proxy, allowlisted CLI environment |
 | `agents/lifecycle.py` | Provision, acceptance test, versions, suspend, reactivate, replace; containment rules |
 | `tools.py` | Agent tool catalogue and strict argument validation |
 | `workflows.py` | Queue, worker, retries, leases, self-healing, lead workflow, health endpoint |
 | `objectives.py` | CEO objective orchestration |
-| `partners.py` | Partner registry, NDA attestation, anonymised briefs, leak detection |
+| `partners.py` | Partner acquisition pipeline (CA/CS/international), owner-only confirmation and NDA/credential attestation, anonymised briefs, leak detection |
 | `comms.py` | Outbox, phase-classified SMTP, dispatch, reconciliation |
 | `crm.py`, `documents.py` | CRM rules; Jinja2 documents (autoescaped), reserved kinds |
 | `approvals.py` | Owner decisions; approved actions execute as idempotent tasks |
@@ -81,6 +82,13 @@ provider → `incur` (actual cost) → the reservation is tracked on the session
 
 **Objective.** See `wwos/objectives.py`: CEO plan (may provision specialists) → tasks run as assigned
 agents → QA verdict → retry (2) → reassign (department peer, else Operations) → executive report → CRM.
+
+**Won deal.** `crm.move_deal(..., "won")` → `workflow.delivery_kickoff` (once): draft SOW from the
+accepted proposal → owner signature request → Engagement Manager planning task.
+
+**Agent SDK runtime** (optional). The CLI runs with `tools=[]` and an allowlisted environment. Each
+permitted WWOS tool is an in-process MCP tool that calls `execute_tool`. Each model call goes
+through the in-process budget proxy (reserve → forward → incur) before reaching the API.
 
 **E-mail.** `draft_email` → `request_send` (approval-gated by policy; partner mail always) →
 `dispatch`: queued → sending → sent | queued (definite 4xx, backoff) | failed (5xx) | unknown

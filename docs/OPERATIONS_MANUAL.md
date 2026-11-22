@@ -24,6 +24,8 @@ Defaults: SQLite (`var/wwos.db`, single process only), offline model (no spend),
 | `WWOS_LLM_PROVIDER` | `offline` | `anthropic` to call Claude |
 | `ANTHROPIC_API_KEY` | — | Claude API key (Secret Manager in GCP) |
 | `WWOS_DEFAULT_MODEL` | `claude-opus-5-5` | Model for new agents (approved list in `wwos/budget.py`) |
+| `WWOS_AGENT_RUNTIME` | `messages` | `agent_sdk` runs agents on the Claude Agent SDK (needs the `agent-sdk` extra; see `AGENT_SDK_EVALUATION.md`) |
+| `WWOS_ANTHROPIC_UPSTREAM` | `https://api.anthropic.com` | Where the Agent SDK budget proxy forwards model calls |
 | `WWOS_ORG_MONTHLY_BUDGET_USD` | `500` | Default monthly AI budget for new tenants |
 | `WWOS_MAX_AGENT_BUDGET_USD` | `100` | Per-agent monthly ceiling |
 | `WWOS_MAX_AGENTS_PER_TENANT` | `40` | Live agent headcount ceiling |
@@ -46,7 +48,8 @@ Defaults: SQLite (`var/wwos.db`, single process only), offline model (no spend),
 |---|---|
 | Decide approvals (e-mails, partner disclosures, payments, signatures, filings, budget) | Dashboard → *Owner approvals* (the exact content is shown), or `GET /api/approvals` + `POST /api/approvals/{id}/decision` |
 | Give the CEO an objective | `POST /api/objectives {title, description, deal_id?}`; follow on the dashboard; read the executive report |
-| Register a partner / attest an NDA | `POST /api/partners`, `POST /api/partners/{id}/nda {"on_file": true}` (only when a signed NDA is actually on file) |
+| Partners | Agents register prospects and move them through acquisition stages. Owner: `POST /api/partners` (with `category`), `POST /api/partners/{id}/nda {"on_file": true}` only when a signed NDA is on file, `POST /api/partners/{id}/confirm {"agreement_on_file": true, "credentials_verified": …}` only when an agreement is signed (and credentials checked), `/deactivate` |
+| Won deals | Moving a deal to *won* drafts the SOW, requests your signature and asks the Engagement Manager for a milestone plan. Set dates, milestones and payment terms yourself |
 | Review agents | Dashboard → *Agent workforce*; `POST /api/agents/{id}/suspend`, `/reactivate`, `/revise` |
 | Read the audit trail | `GET /api/audit` |
 | Issue API keys | `wwos create-key <tenant_id> --name <who> --role operator|viewer|owner` |

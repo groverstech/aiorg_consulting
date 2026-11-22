@@ -11,11 +11,15 @@ Each item states its impact and the path to resolution. None is a known critical
 | 5 | **Budget estimate uses chars÷3 for input tokens.** | Unusual text could tokenise above the estimate; overshoot bounded by one call per concurrent run. | Use the token-counting endpoint before large calls if needed. |
 | 6 | **No payment, e-signature or regulator integrations.** | Approved actions are recorded authorisations; the owner performs them. | Add integrations when the owner selects providers. |
 | 7 | **No HR data model.** | HR responsibilities are coordination only. | Owner to specify HR requirements (personal data has legal obligations). |
-| 8 | **Claude Agent SDK not used** (ADR-022). | Deviation from the stated stack. | Owner may overrule; the runtime is isolated behind `wwos/llm.py` + `agents/runtime.py`. |
+| 8 | **Production runtime choice pending.** The Claude Agent SDK runtime is implemented and tested offline (ADR-027); the default remains the Messages API. | Owner choice (OA-8). | `WWOS_AGENT_RUNTIME=agent_sdk`, image extra `agent-sdk`, worker 1 GiB. |
+| 8a | **Agent SDK: CLI-controlled context.** The CLI prepends an identity sentence and a mid-conversation environment message (working directory, platform) to every run; behaviour can change with CLI releases. | Text outside WWOS control in agent context (no tenant/account data after the allowlist). | Pin `claude-agent-sdk`; re-run `tests/unit/test_agent_sdk_runtime.py` (including the canary test) on every upgrade. |
+| 8b | **Agent SDK: ~217 MiB per concurrent run, +364 MB image.** | Higher worker memory. | 1 GiB worker when using the SDK runtime. |
 | 9 | **Original master mandate unavailable.** | Scope reconstructed from owner instructions (`MASTER_IMPLEMENTATION_MANDATE.md`). | Owner confirms or supplies the original. |
 | 10 | **Login rate limit is per process.** | Multiplied with several API instances. | Shared store if internet-exposed at scale. |
 | 11 | **CI actions pinned to tags, not SHAs.** | Supply-chain exposure for the deploy workflow. | Pin to SHAs before granting production credentials. |
 | 12 | **Terraform state contains the DB password.** | State must be protected. | Private, versioned GCS state bucket, or set the password with `gcloud` outside Terraform. |
 | 13 | **SQLite is development-only** (single process). | Not for multi-process or production use (enforced in production mode). | Use PostgreSQL. |
+| 16 | **Commercial terms not supplied.** SOW dates, milestones, payment terms and partner terms stay "to be agreed". | No automatic invoicing; owner completes documents. | Owner supplies standard terms; templates and workflows can then fill them. |
+| 17 | **No outbound lead-generation integrations** (lead databases, social networks). | Lead generation is inbound (API/web form) plus agent-drafted campaigns. | Add integrations once the owner selects providers and accepts their terms. |
 | 14 | **Existing tenants keep their founding agents' original tool lists** after upgrades that add tools (e.g. objectives/partners tools added this phase). | Older tenants' CEO/QA lack new tools until revised. | Owner revises those agents (`POST /api/agents/{id}/revise` with the new tool list). No production tenants exist yet. |
 | 15 | **Node 20 deprecation warnings** in GitHub Actions. | None today. | Update action versions. |

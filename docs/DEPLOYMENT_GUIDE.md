@@ -122,11 +122,23 @@ environment approval, the workflow runs these steps; nothing happens on push:
 3. Run `docker compose -f deploy/docker-compose.yml --profile migrate run --rm migrate`.
 4. Run `docker compose -f deploy/docker-compose.yml up -d api worker`.
 
-## 8. Activating live services (owner decisions)
+## 8. Agent runtime option
+
+The default runtime is the Messages API (`WWOS_AGENT_RUNTIME=messages`). To run agents on the Claude
+Agent SDK instead (`docs/AGENT_SDK_EVALUATION.md`):
+1. Build the image with `--build-arg EXTRAS=postgres,agent-sdk` (+364 MB).
+2. Set `worker_memory = "1Gi"` in Terraform. At the fetched prices this is about +$2.63/month, for 1,314,000 more GiB-seconds.
+3. Set `WWOS_AGENT_RUNTIME=agent_sdk` on the api and worker services.
+
+The real API key stays in the worker; the CLI subprocess never receives it.
+
+## 9. Activating live services (owner decisions)
 
 | To activate | Change | Authorisation needed |
 |---|---|---|
 | Live Claude agents | add `wwos-anthropic-api-key` secret version; `llm_provider = "anthropic"` | AI spend up to the configured cap |
 | Real e-mail | SMTP secret + `smtp_host`, `smtp_from`, `smtp_user` | E-mail account; messages still wait for approval |
 | Agents e-mail clients without per-message approval | `WWOS_EXTERNAL_EMAIL_REQUIRES_APPROVAL=false` | Business-policy decision (partner mail stays approval-gated regardless) |
-| Partner sharing | register partner, attest NDA in the API | A signed NDA on file |
+| Partner sharing | confirm the partner (`/confirm`) after attesting the NDA | A signed NDA **and** partnership agreement |
+| Agent SDK runtime | see section 8 | Owner choice (OA-8) |
+| Cloud budget alerts | `billing_account_id`, `monthly_cloud_budget_usd` in Terraform | Billing Account permissions |
