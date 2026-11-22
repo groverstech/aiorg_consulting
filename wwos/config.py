@@ -47,6 +47,9 @@ class Settings:
     # "anthropic" calls the Claude API; credentials resolve from the environment.
     llm_provider: str = field(default_factory=lambda: _env("WWOS_LLM_PROVIDER", "offline"))
     default_model: str = field(default_factory=lambda: _env("WWOS_DEFAULT_MODEL", "claude-opus-5-5"))
+    # Agent loop: "messages" (Anthropic Messages API, in-process loop) or "agent_sdk" (Claude Agent SDK
+    # with no built-in tools, gated business tools and a per-call budget proxy). See ADR-027.
+    agent_runtime: str = field(default_factory=lambda: _env("WWOS_AGENT_RUNTIME", "messages"))
     # Hard ceilings. The owner authorises these; agents can never raise them.
     org_monthly_budget_usd: Decimal = field(
         default_factory=lambda: Decimal(_env("WWOS_ORG_MONTHLY_BUDGET_USD", "500"))
@@ -99,6 +102,13 @@ def production_problems(cfg: Settings | None = None) -> list[str]:
         problems.append("WWOS_DATABASE_URL must be PostgreSQL in production (SQLite is single-process, dev only)")
     if cfg.llm_provider not in ("anthropic", "offline"):
         problems.append("WWOS_LLM_PROVIDER must be 'anthropic' or 'offline'")
+    if cfg.agent_runtime not in ("messages", "agent_sdk"):
+        problems.append("WWOS_AGENT_RUNTIME must be 'messages' or 'agent_sdk'")
+    if cfg.agent_runtime == "agent_sdk":
+        from .agents.sdk_runtime import available
+
+        if not available():
+            problems.append("WWOS_AGENT_RUNTIME=agent_sdk requires the claude-agent-sdk package (extra: agent-sdk)")
     if cfg.email_transport == "smtp":
         if cfg.smtp_security == "none":
             problems.append("WWOS_SMTP_SECURITY=none is not allowed in production")

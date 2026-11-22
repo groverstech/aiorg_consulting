@@ -114,8 +114,15 @@ def run_agent_prompt(s: Session, tenant: Tenant, agent: Agent, prompt: str, *, m
     if agent.status not in ("active", "testing"):
         raise PermissionDenied(f"agent {agent.name} is {agent.status}")
     trace = trace if trace is not None else RunTrace()
-    provider = get_provider()
     system = system_prompt(s, agent, tenant)
+    from ..config import get_settings
+
+    if get_settings().agent_runtime == "agent_sdk":
+        from .sdk_runtime import run_agent_prompt_sdk
+
+        return run_agent_prompt_sdk(s, tenant, agent, prompt, max_tokens=max_tokens, allow_tools=allow_tools,
+                                    task_id=task_id, trace=trace, depth=depth, system=system, max_turns=MAX_TURNS)
+    provider = get_provider()
     tool_defs = anthropic_tool_defs(agent.tools) if allow_tools else []
     messages: list[dict] = [{"role": "user", "content": prompt}]
     ctx = ToolContext(session=s, tenant=tenant, agent=agent, task_id=task_id, trace=trace, depth=depth)

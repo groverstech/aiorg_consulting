@@ -5,7 +5,9 @@ RUN useradd --create-home --uid 10001 wwos
 COPY pyproject.toml README.md requirements.lock ./
 COPY wwos ./wwos
 # Pinned, reproducible dependency set (requirements.lock is produced from a clean install of the wheel).
-RUN pip install --no-cache-dir -c requirements.lock ".[postgres]" \
+# Build with --build-arg EXTRAS=postgres,agent-sdk to include the Claude Agent SDK runtime (ADR-027).
+ARG EXTRAS=postgres
+RUN pip install --no-cache-dir -c requirements.lock ".[${EXTRAS}]" \
  && python -c "import wwos.migrate, wwos.api, wwos.workflows" \
  && pip uninstall -y pip setuptools wheel 2>/dev/null || true
 USER wwos

@@ -33,8 +33,9 @@ class SimulatedOrganisation:
     # -- helpers
     @staticmethod
     def _agent(system: str) -> str:
-        m = re.match(r"You are (.+?), the ", system)
-        return m.group(1) if m else "?"
+        # The Agent SDK's CLI prepends its own identity sentence; use the last "You are X, the" clause.
+        found = re.findall(r"You are ([^.,]+?), the ", system)
+        return found[-1] if found else "?"
 
     @staticmethod
     def _first_user(messages) -> str:

@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]
 dev = ["pytest>=8"]
+agent-sdk = ["claude-agent-sdk>=0.2.177"]
 
 [project.scripts]
 wwos = "wwos.cli:main"

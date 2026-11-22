@@ -26,6 +26,12 @@ def H(k):
 
 
 def test_ceo_runs_an_objective_end_to_end_without_human_intervention(tenant):
+    run_ceo_scenario(tenant, llm.set_provider)
+
+
+def run_ceo_scenario(tenant, install_model):
+    """``install_model(sim)`` makes the simulated model drive the agents (provider for the Messages
+    runtime; a fake HTTP API for the Agent SDK runtime)."""
     tid, key = tenant
     sim = SimulatedOrganisation(failing_agents={"Marketing Manager"}, qa_reject_once={"finance"})
     with TestClient(app) as c:
@@ -40,7 +46,7 @@ def test_ceo_runs_an_objective_end_to_end_without_human_intervention(tenant):
         c.post(f"/api/partners/{partner['id']}/confirm", json={"agreement_on_file": True}, headers=H(key))
 
         # 1. The owner gives the CEO a business objective.
-        llm.set_provider(sim)
+        install_model(sim)
         obj = c.post("/api/objectives", headers=H(key), json={
             "title": "Win the Northwind depot review",
             "description": "Move the Northwind opportunity forward, involve our Indian analytics partner for the "
