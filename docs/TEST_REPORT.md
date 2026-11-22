@@ -1,12 +1,13 @@
 # Test report
 
-_Run on 2026-11-22 against commit `0bf49bf` (branch `claude/peaceful-ride-6fjetj`). Re-run with the
+_Run on 2026-11-22 against commit `71223e0` (branch `claude/peaceful-ride-6fjetj`). Re-run with the
 commands at the end. CI runs the same suite on every push (see "CI" below)._
 
 ## Result
 
-**175 passed, 0 failed, 0 skipped** (SQLite + PostgreSQL 16 + headless Chromium). Without
-`WWOS_TEST_PG_URL` the 12 PostgreSQL tests are skipped (163 run).
+**198 passed, 0 failed, 0 skipped** (SQLite + PostgreSQL 16 + headless Chromium + the real Claude Code
+CLI from `claude-agent-sdk` 0.2.187 against a local fake API). Without `WWOS_TEST_PG_URL` the 12
+PostgreSQL tests are skipped; without the `agent-sdk` extra the 13 Agent SDK tests are skipped.
 
 The two race tests (`test_memory_store_thread_race_respects_budget`, PostgreSQL
 `test_concurrent_reservations_never_exceed_org_budget`) were also run 15 consecutive times: 0 failures.
@@ -15,7 +16,7 @@ The two race tests (`test_memory_store_thread_race_respects_budget`, PostgreSQL
 
 | Real (the actual system) | Simulated (test doubles) |
 |---|---|
-| Runtime, permission/approval/budget gates, worker, queue, migrations, CRM, documents, API, dashboard, outbox, PostgreSQL, SQLite, SMTP client code, browser | **The language model** (`OfflineProvider`, `ScriptedProvider`, `SimulatedOrganisation`): it decides which tools to call; quality of live Claude decisions is **not** tested. **The mail server** (`tests/fake_smtp.py`, local only). **The Anthropic HTTP API** (mock transport in `test_anthropic_provider.py`). |
+| Runtime, permission/approval/budget gates, worker, queue, migrations, CRM, documents, API, dashboard, outbox, PostgreSQL, SQLite, SMTP client code, browser, **the bundled Claude Code CLI** (Agent SDK runtime) and the budget proxy | **The language model** (`OfflineProvider`, `ScriptedProvider`, `SimulatedOrganisation`, and `tests/fake_anthropic.py` serving the same decisions over HTTP): it decides which tools to call; quality of live Claude decisions is **not** tested. **The mail server** (`tests/fake_smtp.py`). **The Anthropic HTTP API** (mock transport / local fake). |
 
 No test can reach the internet: an autouse fixture blocks every non-loopback connection
 (`tests/conftest.py`, verified by `test_tests_cannot_reach_the_internet`). No AI charges were
@@ -35,7 +36,10 @@ incurred and no real person was contacted.
 | E-mail idempotency & failure recovery | `test_email_reliability.py` (14) + PostgreSQL variants | each SMTP failure phase, ambiguous outcomes never resent, owner reconciliation, 4 concurrent dispatchers deliver 20 messages exactly once, worker crash mid-send |
 | Migrations & backup restoration | `test_migrations.py`, `test_pg_migrations_isolation.py`, `test_backup_and_restore_round_trip` | fresh → head, upgrade of a real previous-release database (fixture) with every row preserved and a verified pre-migration backup, adoption refusal, destructive gates, PostgreSQL downgrade/upgrade with data |
 | End-to-end lead to client | `test_full_business_cycle_lead_to_sent_proposal`, `scripts/smoke.py` | lead → qualify → proposal → approval → sent → won → invoice |
-| Autonomous organisation (mandate §6) | `test_ceo_runs_an_objective_end_to_end_without_human_intervention` (SQLite + PostgreSQL) | 10 steps below |
+| Autonomous organisation (mandate §6) | `test_ceo_runs_an_objective_end_to_end_without_human_intervention` (SQLite + PostgreSQL) and `test_full_autonomous_organisation_scenario_on_the_agent_sdk` (every agent through the real CLI) | 10 steps below |
+| Agent SDK runtime | `test_agent_sdk_runtime.py` (13), `test_review_round5.py` (8) | built-ins absent; only gated tools; approval gates; per-call budget refusal before the model is called; clamped `max_tokens`; real key never given to the CLI; canary proves no inherited env reaches the model; no orphan CLI after SIGKILL (mutation-checked); no temp files left; broken streams still recorded |
+| Partner acquisition (CA/CS, international) | `test_partner_acquisition_outreach_is_owner_approved_and_prospects_get_no_work`, `test_ca_cs_categories_only_for_indian_partners`, round-5 partner tests | agents cannot confirm; outreach owner-approved; no work to prospects; shadowing/inactive blocked; client identity refused in partner mail |
+| Client delivery | `test_won_deal_hands_off_to_delivery_without_inventing_terms` | won → SOW draft → owner signature request → planning task; no invented terms or invoices |
 | Confidentiality | `test_partner_confidentiality.py` (21) | obfuscation attempts, forged briefs, NDA withdrawal after approval, sub-domains, previews |
 | Production configuration | `test_production_config.py`, `test_deploy_support.py` | unsafe settings refused, Cloud SQL socket URL, structured logs, worker health |
 | Regression & security | `test_review_regressions.py` (47) | one test per confirmed finding from four review rounds |
@@ -75,14 +79,16 @@ The partner brief contains no client identifiers, and the QA invariant scan pass
 - **audit**: `pip-audit`.
 - **infrastructure**: `terraform fmt` and `validate`, then builds the image and runs migrations and the drift check inside it.
 
-CI runs on this branch:
-- Run 2 failed: `alembic` was undeclared. Security review round 3 reported this independently; fixed.
-- Run 3 failed: the drift check found no models on the CLI path, and the budget settle race. Both fixed in `0bf49bf`.
-
-The latest run's result is recorded in `docs/PROJECT_STATE.md`.
+CI history on this branch, oldest first:
+- Run 2 failed: `alembic` was undeclared.
+- Run 3 failed: the drift check imported no models on the CLI path, and the budget settle window.
+- Both were fixed. Every run from run 4 onward has passed; the final HEAD's result is in `docs/PROJECT_STATE.md`.
 
 ## How to run
 
+```bash
+.venv/bin/pip install -e ".[dev,postgres,agent-sdk]" playwright
+```
 ```bash
 .venv/bin/python -m pytest -q
 ```

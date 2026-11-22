@@ -30,6 +30,7 @@ off until the owner authorises them. See `docs/PROJECT_STATE.md`.
 | `docs/OPERATIONS_MANUAL.md` | Day-to-day operation, monitoring, recovery, incidents |
 | `docs/KNOWN_ISSUES.md` | Limitations and their resolution paths |
 | `docs/DECISION_LOG.md` | Architecture and policy decisions |
+| `docs/AGENT_SDK_EVALUATION.md` | Claude Agent SDK evaluation and secured runtime |
 
 ## Quick start (local, no spend)
 ```bash

@@ -31,6 +31,7 @@ findings with scripts. Every confirmed finding has a regression test in
 
 | Round | Scope | Findings | Status |
 |---|---|---|---|
+| 5 | Agent SDK runtime, budget proxy, partner acquisition (`a0b9510`) | 1 high (billed spend lost when a stream broke), 2 medium (cache-write under-pricing; partner-domain shadowing), 5 low | All fixed with regression tests (`tests/unit/test_review_round5.py`) |
 | 1 | Initial system | 1 critical (hidden kwargs → privilege escalation), 3 high (duplicate e-mail on retry, blocked approvals/key squatting, lost acceptance-test spend), 5 medium, 10 low | All fixed; re-verified |
 | 2 | Re-verification | 2 medium (endless lease reclaim, Origin check behind TLS proxy), 4 low | All fixed |
 | 3 | Full hardened system (`dc6be1b`) | 4 high, 4 medium, 8 low | All fixed; re-verified |
@@ -57,19 +58,40 @@ findings with scripts. Every confirmed finding has a regression test in
 Two further defects were found by CI rather than the review: the drift check imported no models on
 the CLI path, and a settle window under-admitted budget. Both are fixed in `0bf49bf`.
 
+### Round 5: findings and remediation
+
+| ID | Severity | Finding | Remediation | Evidence |
+|---|---|---|---|---|
+| R5-H1 | High | Budget proxy released the reservation when the upstream stream dropped or the CLI disconnected after billing, so spend never reached the ledger | After a 200 the call is always recorded; upstream drained even if the CLI hangs up; unreported output priced at the cap | `test_H1_upstream_drop_after_billing_is_recorded_at_worst_case`, `test_H1_client_disconnect_still_drains_and_records_usage` |
+| R5-M1 | Medium | Cache writes priced at 1× input (actual up to 2×); premium betas forwarded | Cache writes 2×, reads 1×; premium betas and fast mode stripped | `test_M1_premium_betas_and_fast_mode_are_stripped` |
+| R5-M2 | Medium | A prospect sharing a partner's domain could shadow an inactive/confirmed partner | Strictest-match resolution; overlapping domains refused; delivery-time re-check | `test_M2_overlapping_partner_domains_refused`, `test_M2_inactive_partner_blocked_even_after_queueing` |
+| R5-L1 | Low | `count_tokens` forwarded for any model, unlimited | Agent model only; 50 per run | `test_L1_count_tokens_needs_the_agent_model_and_is_capped` |
+| R5-L2 | Low | Plain e-mail to a prospect not checked for client identity | Every partner-domain message checked against open deals at draft and send | `test_L2_partner_mail_cannot_carry_client_identity` |
+| R5-L3 | Low | CLI scratch files and launcher left on disk | TMPDIR per run; launcher removed at exit | `test_cli_scratch_files_stay_inside_the_run_directory` |
+| R5-L4 | Low | Proxy read bodies before checking the token; no size or concurrency cap | Token first; 20 MB cap; 32 concurrent requests | `test_L4_token_checked_before_body_and_size_capped` |
+| R5-L5 | Low | Streams without a final usage event under-billed | Missing output priced at the cap | H1 tests |
+
+Earlier hands-on findings in the Agent SDK integration were fixed before review:
+- The CLI injected inherited account variables into prompts. Fixed with an allowlisted launcher, proven by a canary test.
+- A killed worker could leave the CLI running as an orphan. Fixed with a parent-death signal; the test was mutation-checked.
+- The CLI requested `max_tokens` of 128000. Fixed by clamping in the proxy.
+
 ## Residual risks (accepted, documented)
 
 1. **Anonymisation cannot be complete.** Deliberate misspellings ("Akme"), initials ("AH Ltd"),
    numbers spelled as words and paraphrases ("the logistics firm in Leeds we met") can evade any text
    filter. The control is the **mandatory owner preview**: every partner disclosure waits for the owner,
    who sees the exact text in the dashboard and the API.
-2. **Live-model behaviour is untested.** Prompt-injection resistance relies on code gates, which are
+2. **Agent SDK runtime depends on CLI behaviour** (identity text and an environment message added to the
+   context; defaults that change between releases). Pinned version; offline suite incl. canary must pass
+   on every upgrade (`docs/AGENT_SDK_EVALUATION.md`).
+3. **Live-model behaviour is untested.** Prompt-injection resistance relies on code gates, which are
    tested; how the live model reacts to adversarial content is not.
-3. **Single-process login rate limiting.** Per-process memory; with several API instances the
+4. **Single-process login rate limiting.** Per-process memory; with several API instances the
    effective limit is multiplied. Add a shared store (e.g. database) if exposed to the internet at scale.
-4. **CI actions are pinned to version tags, not commit SHAs.** Pin to SHAs before granting the deploy
+5. **CI actions are pinned to version tags, not commit SHAs.** Pin to SHAs before granting the deploy
    workflow production credentials.
-5. **Terraform state holds the DB password** (see the deployment guide): keep state in a private bucket.
+6. **Terraform state holds the DB password** (see the deployment guide): keep state in a private bucket.
 
 ## Reporting
 
