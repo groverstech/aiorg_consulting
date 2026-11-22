@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}White Waters OS{% endblock %}</title>
+<style>
+:root{--bg:#f4f7f9;--card:#fff;--ink:#14232c;--muted:#5b6b75;--brand:#0b4f6c;--ok:#1f7a4d;--warn:#a86400;--bad:#b42318;--line:#dde4e9}
+@media (prefers-color-scheme:dark){:root{--bg:#0e161b;--card:#152129;--ink:#e3ebf0;--muted:#93a4ae;--brand:#5fb3d6;--ok:#4cc38a;--warn:#f0a83c;--bad:#f97066;--line:#253540}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;background:var(--card);border-bottom:1px solid var(--line)}
+header h1{font-size:17px;margin:0;color:var(--brand)}main{padding:20px 24px;max-width:1280px;margin:0 auto}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px;overflow-x:auto}
+.kpi .v{font-size:26px;font-weight:650}.kpi .l{color:var(--muted);font-size:13px}
+h2{font-size:15px;margin:0 0 10px}table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;border:1px solid currentColor}
+.active,.succeeded,.sent{color:var(--ok)}.suspended,.queued,.running,.pending{color:var(--warn)}.dead,.retired,.failed{color:var(--bad)}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden}.bar>div{height:100%;background:var(--brand)}
+button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+button.ok{border-color:var(--ok);color:var(--ok)}button.bad{border-color:var(--bad);color:var(--bad)}
+.muted{color:var(--muted)}code{font-size:12px}
+@media (max-width:600px){main,header{padding-left:16px;padding-right:16px}}
+</style></head><body>{% block body %}{% endblock %}</body></html>

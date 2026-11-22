@@ -1,0 +1,17 @@
+# Status Report — {{ client_name }}
+_Period: {{ period }} · {{ company.name }}_
+
+## Progress
+{% for p in progress %}
+- {{ p }}
+{% endfor %}
+
+## Risks
+{% for r in risks %}
+- {{ r }}
+{% endfor %}
+
+## Next steps
+{% for n in next_steps %}
+- {{ n }}
+{% endfor %}

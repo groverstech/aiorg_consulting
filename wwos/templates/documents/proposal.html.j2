@@ -1,0 +1,8 @@
+{% extends "_base.html.j2" %}{% set doc_kind = "Proposal" %}
+{% block body %}
+<h1>Consulting Proposal &mdash; {{ client_name }}</h1>
+<h2>Objective</h2><p>{{ objective }}</p>
+<h2>Scope</h2><ul>{% for item in scope_items %}<li>{{ item }}</li>{% endfor %}</ul>
+<h2>Investment</h2><p><strong>{{ currency }} {{ "{:,.2f}".format(fee) }}</strong></p>
+<p class="meta">This proposal is valid for {{ valid_days }} days from the issue date. It is not a binding agreement until a statement of work is countersigned by an authorised signatory of {{ company.name }}.</p>
+{% endblock %}

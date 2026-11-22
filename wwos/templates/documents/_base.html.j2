@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{{ doc_kind }} &mdash; {{ client_name }}</title>
+<style>
+body{font-family:Georgia,serif;max-width:780px;margin:40px auto;color:#1b2a33;line-height:1.5;padding:0 16px}
+h1{color:#0b4f6c;border-bottom:3px solid #0b4f6c;padding-bottom:6px}
+h2{color:#0b4f6c;margin-top:28px}
+table{width:100%;border-collapse:collapse;margin:12px 0}
+th,td{border-bottom:1px solid #ccd;padding:6px 8px;text-align:left}
+td.num,th.num{text-align:right}
+.meta{color:#556;font-size:.9em}
+</style></head><body>
+<p class="meta">{{ company.name }} &middot; Issued {{ issued }}</p>
+{% block body %}{% endblock %}
+</body></html>

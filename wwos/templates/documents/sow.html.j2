@@ -1,0 +1,10 @@
+{% extends "_base.html.j2" %}{% set doc_kind = "Statement of Work" %}
+{% block body %}
+<h1>Statement of Work &mdash; {{ client_name }}</h1>
+<p>Start date: {{ start_date }}</p>
+<h2>Deliverables</h2><ul>{% for d in deliverables %}<li>{{ d }}</li>{% endfor %}</ul>
+<h2>Milestones</h2><table><tr><th>Milestone</th><th>Target date</th></tr>
+{% for m in milestones %}<tr><td>{{ m.name }}</td><td>{{ m.date }}</td></tr>{% endfor %}</table>
+<h2>Fees</h2><p><strong>{{ currency }} {{ "{:,.2f}".format(fee) }}</strong></p>
+<h2>Signatures</h2><p class="meta">DRAFT &mdash; requires signature by authorised representatives of both parties. Signing is reserved for the owner.</p>
+{% endblock %}

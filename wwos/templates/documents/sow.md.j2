@@ -1,0 +1,19 @@
+# Statement of Work — {{ client_name }}
+_{{ company.name }} · Issued {{ issued }} · Start {{ start_date }}_
+
+## Deliverables
+{% for d in deliverables %}
+- {{ d }}
+{% endfor %}
+
+## Milestones
+| Milestone | Target date |
+|---|---|
+{% for m in milestones %}
+| {{ m.name }} | {{ m.date }} |
+{% endfor %}
+
+## Fees
+**{{ currency }} {{ "{:,.2f}".format(fee) }}**
+
+DRAFT — requires signature by authorised representatives of both parties.

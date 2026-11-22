@@ -1,0 +1,34 @@
+{% extends "_base.html" %}{% block title %}Dashboard · White Waters OS{% endblock %}{% block body %}
+<header><h1>{{ tenant.name }} · Operating System</h1>
+<form method="post" action="/logout"><span class="muted">{{ role }}</span> <button>Sign out</button></form></header>
+<main>
+<div class="grid">
+ <div class="card kpi"><div class="l">AI spend this month</div><div class="v">${{ "%.2f"|format(spent) }}</div>
+  <div class="bar"><div style="width:{{ [budget_pct,100]|min }}%"></div></div>
+  <div class="l">of ${{ tenant.monthly_budget_usd }} budget · ${{ allocated }} allocated to agents</div></div>
+ <div class="card kpi"><div class="l">Active agents</div><div class="v">{{ agents|selectattr("a.status","equalto","active")|list|length }}</div><div class="l">{{ agents|length }} live in total</div></div>
+ <div class="card kpi"><div class="l">Pending owner approvals</div><div class="v">{{ approvals|length }}</div></div>
+ <div class="card kpi"><div class="l">Tasks</div><div class="v">{{ task_counts.get("queued",0) + task_counts.get("running",0) }}</div><div class="l">in flight · {{ task_counts.get("dead",0) }} dead-lettered</div></div>
+ <div class="card kpi"><div class="l">Contacts</div><div class="v">{{ contacts }}</div></div>
+</div>
+
+<div class="card"><h2>Owner approvals</h2>
+{% if approvals %}<table><tr><th>Category</th><th>Action</th><th>Requested by</th><th>Details</th><th></th></tr>
+{% for r in approvals %}<tr><td>{{ r.category }}</td><td><code>{{ r.action }}</code></td><td>{{ r.requested_by }}</td><td><code>{{ r.params|tojson }}</code></td>
+<td>{% if role == "owner" %}<form method="post" action="/dashboard/approvals/{{ r.id }}" style="display:flex;gap:6px">
+<button class="ok" name="decision" value="approve">Approve</button><button class="bad" name="decision" value="reject">Reject</button></form>{% endif %}</td></tr>{% endfor %}</table>
+{% else %}<p class="muted">Nothing needs your decision.</p>{% endif %}</div>
+
+<div class="card"><h2>Pipeline</h2><table><tr>{% for stage in pipeline %}<th>{{ stage }}</th>{% endfor %}</tr>
+<tr>{% for stage, v in pipeline.items() %}<td>{{ v.count }} · ${{ v.value }}</td>{% endfor %}</tr></table></div>
+
+<div class="card"><h2>Agent workforce</h2><table><tr><th>Agent</th><th>Department</th><th>Model</th><th>Status</th><th>Spend / budget</th><th>Tools</th></tr>
+{% for row in agents %}{% set a = row.a %}<tr><td>{{ a.name }} <span class="muted">v{{ a.version }}</span></td><td>{{ row.dept }}</td><td><code>{{ a.model }}</code></td>
+<td><span class="pill {{ a.status }}">{{ a.status }}</span>{% if a.status != "active" %}<div class="muted">{{ a.status_reason }}</div>{% endif %}</td>
+<td>${{ "%.2f"|format(row.spent) }} / ${{ a.monthly_budget_usd }}</td><td class="muted">{{ a.tools|length }}</td></tr>{% endfor %}</table></div>
+
+<div class="card"><h2>Recent tasks</h2><table><tr><th>Kind</th><th>Status</th><th>Attempts</th><th>Updated</th><th>Error</th></tr>
+{% for t in tasks %}<tr><td><code>{{ t.kind }}</code></td><td><span class="pill {{ t.status }}">{{ t.status }}</span></td><td>{{ t.attempts }}</td><td class="muted">{{ t.updated_at.strftime("%Y-%m-%d %H:%M") if t.updated_at else "" }}</td><td class="muted">{{ t.last_error[:120] }}</td></tr>{% endfor %}</table></div>
+
+<div class="card"><h2>Recent documents</h2><table>{% for d in documents %}<tr><td>{{ d.kind }}</td><td><a href="/api/documents/{{ d.id }}">{{ d.title }}</a></td><td class="muted">{{ d.created_by }}</td></tr>{% else %}<tr><td class="muted">No documents yet.</td></tr>{% endfor %}</table></div>
+</main>{% endblock %}

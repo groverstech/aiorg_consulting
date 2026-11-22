@@ -1,0 +1,10 @@
+{% extends "_base.html.j2" %}{% set doc_kind = "Invoice" %}
+{% block body %}
+<h1>Invoice {{ invoice_number }}</h1>
+<p>Bill to: <strong>{{ client_name }}</strong><br>Payment due within {{ due_days }} days.</p>
+<table><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Amount</th></tr>
+{% for i in line_items %}<tr><td>{{ i.description }}</td><td class="num">{{ i.quantity }}</td><td class="num">{{ "{:,.2f}".format(i.unit_price) }}</td><td class="num">{{ "{:,.2f}".format(i.amount) }}</td></tr>{% endfor %}
+<tr><td colspan="3" class="num">Subtotal</td><td class="num">{{ "{:,.2f}".format(subtotal) }}</td></tr>
+<tr><td colspan="3" class="num">Tax ({{ tax_rate }}%)</td><td class="num">{{ "{:,.2f}".format(tax) }}</td></tr>
+<tr><th colspan="3" class="num">Total ({{ currency }})</th><th class="num">{{ "{:,.2f}".format(total) }}</th></tr></table>
+{% endblock %}

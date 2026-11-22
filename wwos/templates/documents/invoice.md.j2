@@ -1,0 +1,13 @@
+# Invoice {{ invoice_number }}
+_{{ company.name }} · Issued {{ issued }}_
+
+Bill to: **{{ client_name }}** — due within {{ due_days }} days.
+
+| Description | Qty | Unit | Amount |
+|---|---:|---:|---:|
+{% for i in line_items %}
+| {{ i.description }} | {{ i.quantity }} | {{ "{:,.2f}".format(i.unit_price) }} | {{ "{:,.2f}".format(i.amount) }} |
+{% endfor %}
+| Subtotal | | | {{ "{:,.2f}".format(subtotal) }} |
+| Tax ({{ tax_rate }}%) | | | {{ "{:,.2f}".format(tax) }} |
+| **Total ({{ currency }})** | | | **{{ "{:,.2f}".format(total) }}** |
