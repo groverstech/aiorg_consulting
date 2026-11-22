@@ -51,8 +51,12 @@ def register(s: Session, *, name: str, region: str, contact_email: str, services
     existing = s.scalars(select(Partner).where(func.lower(Partner.name) == name.lower())).first()
     if existing:
         return existing
+    domain = email.rsplit("@", 1)[1]
+    overlap = partners_for_address(s, email)
+    if overlap:  # one domain, one partner: avoids a prospect shadowing a confirmed or inactive partner
+        raise PartnerError(f"the domain {domain} is already registered to partner {overlap[0].name}")
     p = Partner(name=name, region=region, services=services, contact_email=email, category=category,
-                email_domain=email.rsplit("@", 1)[1], created_by=actor)
+                email_domain=domain, created_by=actor)
     s.add(p)
     s.flush()
     audit(s, actor, "partner.registered", p.id, name=name, region=region, category=category)
@@ -125,13 +129,30 @@ def _domain_matches(domain: str, partner_domain: str) -> bool:
     return domain == partner_domain or domain.endswith("." + partner_domain)
 
 
-def partner_for_address(s: Session, address: str) -> Partner | None:
-    """The partner an address belongs to, including sub-domains (ops@mail.partner.in -> partner.in)."""
+def partners_for_address(s: Session, address: str) -> list[Partner]:
+    """Every partner an address could belong to, including sub-domains (ops@mail.partner.in -> partner.in)."""
     domain = address.strip().lower().rsplit("@", 1)[-1]
-    for p in s.scalars(select(Partner)):
-        if _domain_matches(domain, p.email_domain):
-            return p
-    return None
+    return [p for p in s.scalars(select(Partner).order_by(Partner.created_at))
+            if _domain_matches(domain, p.email_domain) or _domain_matches(p.email_domain, domain)]
+
+
+def partner_for_address(s: Session, address: str) -> Partner | None:
+    """The STRICTEST matching partner: inactive beats confirmed beats prospect, so an ambiguous
+    address can never be downgraded to a weaker rule."""
+    matches = partners_for_address(s, address)
+    rank = {"inactive": 0, "confirmed": 1, "prospect": 2}
+    return min(matches, key=lambda p: rank.get(p.status, 0)) if matches else None
+
+
+def client_leaks_in(s: Session, text: str) -> list[str]:
+    """Identifiers of any open deal's client found in ``text`` (for messages to partner domains)."""
+    from .models import Deal as _Deal
+
+    found: list[str] = []
+    for deal in s.scalars(select(_Deal).where(_Deal.stage.notin_(["lost"])).order_by(_Deal.created_at.desc()).limit(500)):
+        if leaks(s, deal, text):
+            found.append(code_name(deal.id))
+    return found
 
 
 def code_name(deal_id: str) -> str:

@@ -247,3 +247,12 @@ with db.tenant_session({tid!r}) as s:
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+def test_cli_scratch_files_stay_inside_the_run_directory(tenant, sdk, tmp_path, monkeypatch):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    tid, _ = tenant
+    with sdk(script(("text", "hi"))):
+        run(tid, "operations")
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name != "pytest-of-root"]
+    assert not [p for p in leftovers if p.startswith(("claude", "cc-", "wwos-agent"))], leftovers

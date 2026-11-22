@@ -170,6 +170,7 @@ def draft_email(s: Session, *, idempotency_key: str, to: str, subject: str, body
         raise ValueError("subject and body are required")
     if contact_id is not None and s.get(Contact, contact_id) is None:  # tenant-scoped lookup
         raise ValueError("contact not found")
+    _check_partner_message(s, to, subject + "\n" + body)
     msg = OutboundMessage(idempotency_key=idempotency_key, to_address=_norm_email(to), subject=subject.strip(),
                           body=body, contact_id=contact_id, status="draft", created_by=actor)
     s.add(msg)
@@ -178,6 +179,20 @@ def draft_email(s: Session, *, idempotency_key: str, to: str, subject: str, body
 
 
 SENDABLE = ("draft", "pending_approval")
+
+
+def _check_partner_message(s: Session, to: str, text: str) -> None:
+    """Messages to partner domains: never to an inactive partner, never containing a client's identity."""
+    from .partners import client_leaks_in, partners_for_address
+
+    matches = partners_for_address(s, to)
+    if not matches:
+        return
+    inactive = [p.name for p in matches if p.status == "inactive"]
+    if inactive:
+        raise ValueError(f"partner {inactive[0]} is inactive; nothing may be sent to them")
+    if client_leaks_in(s, text):
+        raise ValueError("message to a partner identifies a client; use an anonymised partner brief")
 
 
 def resolve(s: Session, message_id: str, *, delivered: bool, actor: str) -> OutboundMessage:
@@ -214,11 +229,7 @@ def request_send(s: Session, message_id: str) -> OutboundMessage:
         return msg  # idempotent
     if msg.status not in SENDABLE:
         raise ValueError(f"message is {msg.status} and cannot be sent")
-    from .partners import partner_for_address
-
-    partner = partner_for_address(s, msg.to_address)
-    if partner is not None and partner.status == "inactive":
-        raise ValueError(f"partner {partner.name} is inactive; nothing may be sent to them")
+    _check_partner_message(s, msg.to_address, msg.subject + "\n" + msg.body)
     msg.status = "queued"
     return msg
 
@@ -260,6 +271,14 @@ def dispatch(limit: int = 50, tenant_id: str | None = None) -> int:
         with system_session(immediate=True) as s:
             msg = s.get(OutboundMessage, mid)
             to, subject, body, attempts, owner = msg.to_address, msg.subject, msg.body, msg.attempts, msg.tenant_id
+        try:  # re-check partner rules at delivery time (a partner may have been deactivated meanwhile)
+            with tenant_session(owner) as ts:
+                _check_partner_message(ts, to, subject + "\n" + body)
+        except ValueError as e:
+            with system_session(immediate=True) as s:
+                msg = s.get(OutboundMessage, mid)
+                msg.status, msg.last_error = "failed", f"blocked at delivery: {e}"[:2000]
+            continue
         try:
             transport().send(to=to, subject=subject, body=body, message_id=mid)
         except DeliveryRejected as e:  # definitely not delivered

@@ -96,6 +96,9 @@ env = {{k: v for k, v in os.environ.items() if k in allowed or k.startswith({_SD
 os.execve({str(real)!r}, [{str(real)!r}] + sys.argv[1:], env)
 """)
     os.chmod(path, stat.S_IRWXU)
+    import atexit
+
+    atexit.register(shutil.rmtree, d, True)
     _launcher_path = path
     return path
 
@@ -107,6 +110,7 @@ def subprocess_env(base_url: str, config_dir: str, max_output_tokens: int) -> di
     env.update({k: "" for k in _PROXY_VARS})
     env.update({
         "HOME": config_dir,
+        "TMPDIR": config_dir,  # CLI scratch files land in the per-run directory that is deleted afterwards
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_API_KEY": "wwos-proxy-holds-the-real-key",
