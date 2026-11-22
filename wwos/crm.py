@@ -16,6 +16,8 @@ from .models import Activity, Company, Contact, Deal
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 
+MAX_AMOUNT = Decimal("1000000000000")  # fits Numeric(14, 2)
+
 STAGES = ["lead", "qualified", "proposal", "negotiation", "won", "lost"]
 # Allowed forward/back transitions. won/lost are terminal except reopening lost -> qualified.
 TRANSITIONS = {
@@ -82,10 +84,11 @@ def create_deal(s: Session, *, contact_id: str, title: str, value: str | float |
         raise CRMValidationError("contact not found")
     try:
         amount = Decimal(str(value))
-    except InvalidOperation as e:
+    except (InvalidOperation, TypeError, ValueError) as e:
         raise CRMValidationError(f"invalid deal value: {value!r}") from e
-    if amount < 0:
-        raise CRMValidationError("deal value cannot be negative")
+    if not amount.is_finite() or amount < 0 or amount >= MAX_AMOUNT:
+        raise CRMValidationError(f"deal value must be between 0 and {MAX_AMOUNT:,}")
+    amount = amount.quantize(Decimal("0.01"))
     if not (title or "").strip():
         raise CRMValidationError("deal title is required")
     if not re.fullmatch(r"[A-Z]{3}", currency or ""):

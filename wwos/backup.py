@@ -68,6 +68,10 @@ def restore(backup_path: str, url: str | None = None) -> dict[str, int]:
     url = url or get_settings().database_url
     counts = verify(backup_path)
     target = _sqlite_path(url)
+    import os as _os
+
+    if _os.path.exists(target):  # safety copy of the current database before overwriting it
+        backup(_os.path.join(_os.path.dirname(_os.path.abspath(backup_path)) or ".", "pre-restore"), url=url)
     src = sqlite3.connect(backup_path)
     dst = sqlite3.connect(target)
     try:

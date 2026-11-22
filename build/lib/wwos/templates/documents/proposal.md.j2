@@ -1,0 +1,15 @@
+# Consulting Proposal — {{ client_name }}
+_{{ company.name }} · Issued {{ issued }}_
+
+## Objective
+{{ objective }}
+
+## Scope
+{% for item in scope_items %}
+- {{ item }}
+{% endfor %}
+
+## Investment
+**{{ currency }} {{ "{:,.2f}".format(fee) }}**
+
+Valid for {{ valid_days }} days. Not binding until a statement of work is countersigned by an authorised signatory of {{ company.name }}.

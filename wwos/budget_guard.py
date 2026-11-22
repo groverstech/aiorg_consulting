@@ -63,11 +63,11 @@ class _Res:
         return self.actual if self.actual is not None else self.estimate
 
 
-def _committed(conn, tenant_id: str, agent_id: str | None = None) -> Decimal:
+def _committed(conn, tenant_id: str, agent_ids: list[str] | None = None) -> Decimal:
     q = select(func.coalesce(func.sum(CostEntry.cost_usd), 0)).where(
         CostEntry.tenant_id == tenant_id, CostEntry.created_at >= month_start())
-    if agent_id:
-        q = q.where(CostEntry.agent_id == agent_id)
+    if agent_ids is not None:
+        q = q.where(CostEntry.agent_id.in_(agent_ids))
     return Decimal(str(conn.execute(q).scalar_one()))
 
 
@@ -107,7 +107,11 @@ class MemoryReservationStore:
         self._lock = threading.Lock()
         self._res: dict[str, _Res] = {}
 
-    def reserve(self, *, tenant_id, agent_id, agent_name, agent_budget, task_id, estimate) -> str:
+    def reserve(self, *, tenant_id, agent_id, agent_name, agent_budget, task_id, estimate,
+                lineage_ids: list[str] | None = None) -> str:
+        """``lineage_ids``: every version of the agent. The agent limit covers the whole lineage, so a
+        revision (new id) cannot reset the month's spend."""
+        ids = set(lineage_ids or []) | {agent_id}
         with self._lock:
             now = utcnow()
             active = [r for r in self._res.values() if r.tenant_id == tenant_id and r.status in ACTIVE
@@ -116,11 +120,11 @@ class MemoryReservationStore:
                 org_budget = Decimal(str(conn.execute(select(Tenant.monthly_budget_usd)
                                                       .where(Tenant.id == tenant_id)).scalar_one()))
                 committed_org = _committed(conn, tenant_id)
-                committed_agent = _committed(conn, tenant_id, agent_id)
+                committed_agent = _committed(conn, tenant_id, sorted(ids))
             _admit(org_budget=org_budget, agent_budget=agent_budget, agent_name=agent_name,
                    committed_org=committed_org, committed_agent=committed_agent,
                    active_org=sum((r.exposure for r in active), Decimal("0")),
-                   active_agent=sum((r.exposure for r in active if r.agent_id == agent_id), Decimal("0")),
+                   active_agent=sum((r.exposure for r in active if r.agent_id in ids), Decimal("0")),
                    estimate=estimate)
             r = _Res(new_id(), tenant_id, agent_id, task_id, estimate)
             self._res[r.id] = r
@@ -180,7 +184,9 @@ class SqlReservationStore:
                      .on_conflict_do_nothing(index_elements=["tenant_id"]))
         conn.execute(select(BudgetLock.id).where(BudgetLock.tenant_id == tenant_id).with_for_update())
 
-    def reserve(self, *, tenant_id, agent_id, agent_name, agent_budget, task_id, estimate) -> str:
+    def reserve(self, *, tenant_id, agent_id, agent_name, agent_budget, task_id, estimate,
+                lineage_ids: list[str] | None = None) -> str:
+        ids = sorted(set(lineage_ids or []) | {agent_id})
         now = utcnow()
         with db.write_transaction() as conn:
             self._lock_tenant(conn, tenant_id)
@@ -191,9 +197,9 @@ class SqlReservationStore:
                 BudgetReservation.tenant_id == tenant_id, BudgetReservation.status.in_(ACTIVE),
                 BudgetReservation.expires_at > now)
             active_org = Decimal(str(conn.execute(base).scalar_one()))
-            active_agent = Decimal(str(conn.execute(base.where(BudgetReservation.agent_id == agent_id)).scalar_one()))
+            active_agent = Decimal(str(conn.execute(base.where(BudgetReservation.agent_id.in_(ids))).scalar_one()))
             _admit(org_budget=org_budget, agent_budget=agent_budget, agent_name=agent_name,
-                   committed_org=_committed(conn, tenant_id), committed_agent=_committed(conn, tenant_id, agent_id),
+                   committed_org=_committed(conn, tenant_id), committed_agent=_committed(conn, tenant_id, ids),
                    active_org=active_org, active_agent=active_agent, estimate=estimate)
             rid = new_id()
             conn.execute(insert(BudgetReservation).values(

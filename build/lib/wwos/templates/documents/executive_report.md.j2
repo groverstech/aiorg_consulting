@@ -1,0 +1,22 @@
+# Executive report — {{ objective_title }}
+_{{ company.name }} · Issued {{ issued }} · Status: {{ status }}_
+
+## Summary
+{{ summary }}
+
+## Work completed
+| Department | Task | Agent | Attempts | QA |
+|---|---|---|---|---|
+{% for t in tasks %}
+| {{ t.department }} | {{ t.title }} | {{ t.agent }} | {{ t.attempts }}{% if t.reassigned %} (reassigned){% endif %} | {{ t.qa }} |
+{% endfor %}
+
+## Agents created for this objective
+{% for a in new_agents %}
+- {{ a }}
+{% else %}
+- None
+{% endfor %}
+
+## AI spend on this objective
+${{ spend }}

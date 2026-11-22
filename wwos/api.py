@@ -42,6 +42,17 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="White Waters AI Business Operating System", version="0.1.0", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    # Not "no-referrer": that makes browsers send "Origin: null" on our own form posts.
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
 # ---------------------------------------------------------------- errors
 
 @app.exception_handler(crm.CRMValidationError)
@@ -178,8 +189,9 @@ def list_contacts(s: Session = Depends(viewer_session)) -> list[dict]:
 
 
 @app.post("/api/contacts", status_code=201)
-def create_contact(body: ContactIn, s: Session = Depends(operator_session)) -> dict:
-    c, created = crm.upsert_contact(s, actor="api", **body.model_dump())
+def create_contact(body: ContactIn, p: Principal = Depends(require("operator")),
+                   s: Session = Depends(operator_session)) -> dict:
+    c, created = crm.upsert_contact(s, actor=f"api:{p.key_name}", **body.model_dump())
     return {"id": c.id, "created": created}
 
 
@@ -197,8 +209,9 @@ def list_deals(s: Session = Depends(viewer_session)) -> list[dict]:
 
 
 @app.post("/api/deals", status_code=201)
-def create_deal(body: DealIn, s: Session = Depends(operator_session)) -> dict:
-    d = crm.create_deal(s, actor="api", **body.model_dump())
+def create_deal(body: DealIn, p: Principal = Depends(require("operator")),
+                s: Session = Depends(operator_session)) -> dict:
+    d = crm.create_deal(s, actor=f"api:{p.key_name}", **body.model_dump())
     return {"id": d.id, "stage": d.stage}
 
 
@@ -207,9 +220,10 @@ class StageIn(BaseModel):
 
 
 @app.post("/api/deals/{deal_id}/stage")
-def move_deal(deal_id: str, body: StageIn, s: Session = Depends(operator_session)) -> dict:
+def move_deal(deal_id: str, body: StageIn, p: Principal = Depends(require("operator")),
+              s: Session = Depends(operator_session)) -> dict:
     _404(s.get(Deal, deal_id), "deal")
-    d = crm.move_deal(s, deal_id, body.stage, actor="api")
+    d = crm.move_deal(s, deal_id, body.stage, actor=f"api:{p.key_name}")
     return {"id": d.id, "stage": d.stage}
 
 
@@ -235,7 +249,8 @@ class LeadIn(BaseModel):
 @app.post("/api/leads", status_code=202)
 def submit_lead(body: LeadIn, s: Session = Depends(operator_session)) -> dict:
     data = body.model_dump(exclude={"idempotency_key"})
-    task = workflows.start_lead_workflow(s, data, idempotency_key=body.idempotency_key)
+    key = f"api-lead:{body.idempotency_key}" if body.idempotency_key else None  # never collides with system keys
+    task = workflows.start_lead_workflow(s, data, idempotency_key=key)
     return {"task_id": task.id, "workflow_id": task.workflow_id, "status": task.status}
 
 
@@ -249,8 +264,9 @@ class DocumentIn(BaseModel):
 
 
 @app.post("/api/documents", status_code=201)
-def create_document(body: DocumentIn, s: Session = Depends(operator_session)) -> dict:
-    doc = documents.generate(s, actor="api", **body.model_dump())
+def create_document(body: DocumentIn, p: Principal = Depends(require("operator")),
+                    s: Session = Depends(operator_session)) -> dict:
+    doc = documents.generate(s, actor=f"api:{p.key_name}", **body.model_dump())
     return {"id": doc.id, "kind": doc.kind}
 
 
@@ -533,6 +549,14 @@ def _approval_preview(s: Session, r: ApprovalRequest) -> dict | None:
         m = s.get(OutboundMessage, (r.params or {}).get("message_id"))
         if m is not None:
             return {"to": m.to_address, "subject": m.subject, "body": m.body}
+    if r.action == "partners.send_brief":
+        from .models import Partner
+
+        p = s.get(Partner, (r.params or {}).get("partner_id"))
+        d = s.get(Document, (r.params or {}).get("document_id"))
+        if p is not None and d is not None:
+            return {"to": f"{p.contact_email} (partner: {p.name}, NDA {p.nda_status})", "subject": d.title,
+                    "body": d.markdown}
     return None
 
 
@@ -591,14 +615,20 @@ _login_attempts: dict[str, list[float]] = {}
 LOGIN_LIMIT_PER_MINUTE = 10
 
 
-def _login_rate_limited(client: str) -> bool:
+def _login_rate_limited(client: str, record_failure: bool = False) -> bool:
+    """Only failed attempts count, per client address, over a sliding minute. (Behind a proxy set
+    FORWARDED_ALLOW_IPS so the real client address is used.)"""
     import time
 
     now = time.monotonic()
+    for k in [k for k, v in _login_attempts.items() if not v or now - v[-1] >= 60]:
+        _login_attempts.pop(k, None)  # prune idle clients
     recent = [t for t in _login_attempts.get(client, []) if now - t < 60]
-    recent.append(now)
-    _login_attempts[client] = recent
-    return len(recent) > LOGIN_LIMIT_PER_MINUTE
+    if record_failure:
+        recent.append(now)
+    if recent:
+        _login_attempts[client] = recent
+    return len(recent) >= LOGIN_LIMIT_PER_MINUTE
 
 
 def _web_principal(request: Request) -> Principal | None:
@@ -639,14 +669,16 @@ def login(request: Request, api_key: str = Form(...)):
 
     if not _same_origin(request):
         raise HTTPException(status_code=403, detail="cross-site request refused")
-    if _login_rate_limited(request.client.host if request.client else "unknown"):
-        raise HTTPException(status_code=429, detail="too many login attempts; wait a minute")
+    client = request.client.host if request.client else "unknown"
+    if _login_rate_limited(client):
+        raise HTTPException(status_code=429, detail="too many failed login attempts; wait a minute")
     from sqlalchemy import delete
 
     with db.system_session() as s:
         s.execute(delete(WebSession).where(WebSession.expires_at < utcnow()))  # prune
         key = s.scalars(select(ApiKey).where(ApiKey.key_hash == hash_key(api_key), ApiKey.active.is_(True))).first()
         if key is None:
+            _login_rate_limited(client, record_failure=True)
             return RedirectResponse("/login?error=Invalid+key", status_code=303)
         token = secrets.token_urlsafe(32)
         s.add(WebSession(tenant_id=key.tenant_id, token_hash=hash_key(token), api_key_id=key.id,

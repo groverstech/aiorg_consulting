@@ -55,5 +55,7 @@ jobs:
       - run: terraform -chdir=deploy/gcp fmt -check -diff
       - run: terraform -chdir=deploy/gcp init -backend=false
       - run: terraform -chdir=deploy/gcp validate
-      - name: Container image builds
-        run: docker build -t wwos:ci .
+      - name: Container image builds and starts (migrations + app import inside the image)
+        run: |
+          docker build -t wwos:ci .
+          docker run --rm -e WWOS_DATABASE_URL=sqlite:////tmp/ci.db wwos:ci sh -c "wwos db upgrade && wwos db check && python -c 'import wwos.api'"

@@ -1,5 +1,8 @@
-# Production-shaped stack: API, background worker, PostgreSQL.
-# Secrets come from deploy/.env (never committed). See docs/RUNBOOK.md.
+# Production-shaped stack: API, background worker, PostgreSQL, one-shot migration job.
+# Secrets come from deploy/.env (never committed). See docs/DEPLOYMENT_GUIDE.md.
+# Order: back up the database, then `docker compose run --rm migrate`, then `up -d api worker`.
+# The API and worker run with WWOS_ENV=production: they refuse unsafe settings and refuse to start
+# on an un-migrated schema (they never migrate by themselves).
 services:
   db:
     image: postgres:16-alpine
@@ -13,6 +16,14 @@ services:
       interval: 10s
       retries: 5
     restart: unless-stopped
+  migrate:
+    build: ..
+    profiles: ["migrate"]
+    command: ["wwos", "db", "upgrade", "--backup-confirmed"]
+    env_file: .env
+    environment:
+      WWOS_DATABASE_URL: postgresql+psycopg://wwos:${POSTGRES_PASSWORD}@db:5432/wwos
+    depends_on: { db: { condition: service_healthy } }
   api:
     build: ..
     env_file: .env
@@ -23,7 +34,7 @@ services:
     restart: unless-stopped
   worker:
     build: ..
-    command: ["wwos", "worker"]
+    command: ["wwos", "worker", "--health-port", "8081"]
     env_file: .env
     environment:
       WWOS_DATABASE_URL: postgresql+psycopg://wwos:${POSTGRES_PASSWORD}@db:5432/wwos

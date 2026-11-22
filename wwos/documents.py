@@ -50,9 +50,9 @@ def _env(autoescape: bool) -> Environment:
 def _money(value: Any) -> Decimal:
     try:
         d = Decimal(str(value))
-    except InvalidOperation as e:
+    except (InvalidOperation, TypeError, ValueError) as e:
         raise DocumentError(f"invalid amount {value!r}") from e
-    if not d.is_finite():
+    if not d.is_finite() or abs(d) >= Decimal("1000000000000"):
         raise DocumentError(f"invalid amount {value!r}")
     if d < 0:
         raise DocumentError("amounts cannot be negative")
@@ -72,7 +72,11 @@ def _prepare(kind: str, data: dict[str, Any]) -> dict[str, Any]:
         ctx["fee"] = _money(ctx["fee"])
     if kind == "invoice":
         items = []
+        if not isinstance(ctx["line_items"], list):
+            raise DocumentError("line_items must be a list")
         for item in ctx["line_items"]:
+            if not isinstance(item, dict) or not item.get("description") or "unit_price" not in item:
+                raise DocumentError("each line item needs a description and a unit_price")
             qty = _money(item.get("quantity", 1))
             unit = _money(item["unit_price"])
             items.append({"description": item["description"], "quantity": qty, "unit_price": unit,
@@ -91,8 +95,15 @@ def render(kind: str, data: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     return html, md, ctx
 
 
+# Kinds that only system code may create: a partner brief must come from the anonymiser, and an
+# executive report from the objective coordinator. Agents and API callers cannot forge them.
+RESERVED_KINDS = {"partner_brief", "executive_report"}
+
+
 def generate(s: Session, *, kind: str, title: str, data: dict[str, Any], deal_id: str | None = None,
-             actor: str = "system") -> Document:
+             actor: str = "system", internal: bool = False) -> Document:
+    if kind in RESERVED_KINDS and not internal:
+        raise DocumentError(f"{kind} documents can only be produced by the system workflow that owns them")
     if deal_id is not None and s.get(Deal, deal_id) is None:
         raise DocumentError("deal not found")
     html, md, ctx = render(kind, data)

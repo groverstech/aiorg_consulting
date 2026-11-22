@@ -53,15 +53,18 @@ def tick(now: datetime | None = None) -> int:
     with system_session() as s:
         tenant_ids = [t for (t,) in s.execute(select(Tenant.id)).all()]
     for tid in tenant_ids:
-        with tenant_session(tid) as s:
-            for job in JOBS:
-                agent = find_agent(s, role=job.role)
-                if agent is None:
-                    continue
-                _, new = enqueue(s, kind="agent_run", agent_id=agent.id,
-                                 idempotency_key=f"sched:{job.name}:{_period_key(job.period, now)}",
-                                 payload={"instruction": job.instruction, "delegated_by": f"schedule:{job.name}"})
-                created += int(new)
+        try:  # one tenant's problem must never stop other tenants' jobs or the QA scan
+            with tenant_session(tid) as s:
+                for job in JOBS:
+                    agent = find_agent(s, role=job.role)
+                    if agent is None:
+                        continue
+                    _, new = enqueue(s, kind="agent_run", agent_id=agent.id,
+                                     idempotency_key=f"sched:{job.name}:{_period_key(job.period, now)}",
+                                     payload={"instruction": job.instruction, "delegated_by": f"schedule:{job.name}"})
+                    created += int(new)
+        except Exception:  # noqa: BLE001
+            log.exception("scheduling failed for tenant %s", tid)
     hour = _period_key("hourly", now)
     if last_qa().get("at") != hour:
         from . import qa

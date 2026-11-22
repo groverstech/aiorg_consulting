@@ -125,8 +125,10 @@ def run_agent_prompt(s: Session, tenant: Tenant, agent: Agent, prompt: str, *, m
         estimate = budget.worst_case_estimate(agent.model, prompt_chars, max_tokens)
         # Atomic reservation (agent + organisation limits) before the call; see budget_guard.
         guard = budget_guard.store()
+        lineage = [i for (i,) in s.execute(select(Agent.id).where(Agent.lineage_id == agent.lineage_id))]
         rid = guard.reserve(tenant_id=tenant.id, agent_id=agent.id, agent_name=agent.name,
-                            agent_budget=agent.monthly_budget_usd, task_id=task_id, estimate=estimate)
+                            agent_budget=agent.monthly_budget_usd, task_id=task_id, estimate=estimate,
+                            lineage_ids=lineage)
         budget_guard.track(s, rid)
         try:
             result = provider.complete(model=agent.model, system=system, messages=messages, tools=tool_defs,
@@ -139,13 +141,18 @@ def run_agent_prompt(s: Session, tenant: Tenant, agent: Agent, prompt: str, *, m
         trace.spend.append(SpendRecord(agent.id, task_id, billed_model, result.input_tokens,
                                        result.output_tokens, reservation_id=rid))
         messages.append({"role": "assistant", "content": result.content})
-        if result.stop_reason != "tool_use" or not result.tool_calls:
+        if result.stop_reason != "tool_use" or not result.tool_calls or not allow_tools:
+            # With allow_tools=False no tool call is ever executed, whatever the model returns.
             final_text = result.text
             break
+        offered = set(agent.tools or [])
         tool_results = []
         for call in result.tool_calls:
             name = from_api_name(call["name"])
-            out, is_err = execute_tool(ctx, name, call.get("input") or {}, trace)
+            if name not in offered:
+                out, is_err = {"error": f"tool {name} was not offered to you"}, True
+            else:
+                out, is_err = execute_tool(ctx, name, call.get("input") or {}, trace)
             trace.tool_calls.append({"tool": name, "error": is_err})
             tool_results.append({"type": "tool_result", "tool_use_id": call["id"],
                                  "content": json.dumps(out, default=str), "is_error": is_err})

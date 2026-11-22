@@ -1,0 +1,7 @@
+{% extends "_base.html.j2" %}{% set doc_kind = "Status report" %}
+{% block body %}
+<h1>Status Report &mdash; {{ client_name }}</h1><p>Period: {{ period }}</p>
+<h2>Progress</h2><ul>{% for p in progress %}<li>{{ p }}</li>{% endfor %}</ul>
+<h2>Risks</h2><ul>{% for r in risks %}<li>{{ r }}</li>{% endfor %}</ul>
+<h2>Next steps</h2><ul>{% for n in next_steps %}<li>{{ n }}</li>{% endfor %}</ul>
+{% endblock %}

@@ -93,6 +93,16 @@ def run() -> Report:
                 Agent.tenant_id == t.id, Agent.status != "retired")).scalar_one()))
             if allocated > t.monthly_budget_usd:
                 problems.append(f"{t.name} allocated ${allocated} over budget ${t.monthly_budget_usd}")
+            lineages: dict[str, list[Agent]] = {}
+            for a in s.scalars(select(Agent).where(Agent.tenant_id == t.id)):
+                lineages.setdefault(a.lineage_id, []).append(a)
+            for versions in lineages.values():
+                cap = max(v.monthly_budget_usd for v in versions)
+                l_spent = Decimal(str(s.execute(select(func.coalesce(func.sum(CostEntry.cost_usd), 0)).where(
+                    CostEntry.agent_id.in_([v.id for v in versions]),
+                    CostEntry.created_at >= month_start())).scalar_one()))
+                if l_spent > cap:
+                    problems.append(f"agent lineage {versions[0].name} spent ${l_spent} over ${cap}")
             for a in s.scalars(select(Agent).where(Agent.tenant_id == t.id)):
                 a_spent = Decimal(str(s.execute(select(func.coalesce(func.sum(CostEntry.cost_usd), 0)).where(
                     CostEntry.agent_id == a.id, CostEntry.created_at >= month_start())).scalar_one()))

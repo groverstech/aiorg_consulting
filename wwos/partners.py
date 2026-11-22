@@ -63,26 +63,81 @@ def attest_nda(s: Session, partner_id: str, *, on_file: bool, actor: str) -> Par
     return p
 
 
+def _domain_matches(domain: str, partner_domain: str) -> bool:
+    return domain == partner_domain or domain.endswith("." + partner_domain)
+
+
 def partner_for_address(s: Session, address: str) -> Partner | None:
+    """The partner an address belongs to, including sub-domains (ops@mail.partner.in -> partner.in)."""
     domain = address.strip().lower().rsplit("@", 1)[-1]
-    return s.scalars(select(Partner).where(Partner.email_domain == domain)).first()
+    for p in s.scalars(select(Partner)):
+        if _domain_matches(domain, p.email_domain):
+            return p
+    return None
 
 
 def code_name(deal_id: str) -> str:
     return "Client-" + hashlib.sha256(deal_id.encode()).hexdigest()[:6].upper()
 
 
+LEGAL_SUFFIXES = {"ltd", "limited", "inc", "llc", "llp", "plc", "pvt", "private", "corp", "corporation", "co",
+                  "company", "gmbh", "sa", "ag", "bv", "the"}
+MIN_FINGERPRINT = 4
+
+
+def _norm(text: str) -> str:
+    """Lower-case letters and digits only: defeats spacing, punctuation and case tricks."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
 def _identifiers(s: Session, deal: Deal) -> list[str]:
-    ids: list[str] = []
-    contact = s.get(Contact, deal.contact_id)
-    if contact:
-        ids += [contact.email, f"{contact.first_name} {contact.last_name}".strip(), contact.first_name,
-                contact.last_name, contact.phone, contact.email.rsplit("@", 1)[1]]
+    """Literal identifiers of the client (for replacement): the deal's contact, every contact at the
+    same company, the company, its website, and the deal title."""
+    contacts = [s.get(Contact, deal.contact_id)]
     company = s.get(Company, deal.company_id) if deal.company_id else None
     if company:
+        contacts += list(s.scalars(select(Contact).where(Contact.company_id == company.id)))
+    ids: list[str] = [deal.title]
+    for c in {c.id: c for c in contacts if c}.values():
+        ids += [c.email, f"{c.first_name} {c.last_name}".strip(), c.first_name, c.last_name, c.phone,
+                c.email.rsplit("@", 1)[1]]
+    if company:
         ids += [company.name, company.website]
-    # Longest first so "Acme Ltd" is replaced before "Acme".
-    return sorted({i for i in ids if i and len(i.strip()) >= 2}, key=len, reverse=True)
+    return sorted({i.strip() for i in ids if i and len(i.strip()) >= 2}, key=len, reverse=True)
+
+
+def _domain_label(domain: str) -> str:
+    """Registrable label of a domain: northwind.io -> northwind, shop.acme.co.uk -> acme."""
+    labels = [x for x in domain.lower().strip(".").split(".") if x]
+    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in {"co", "com", "org", "net", "ac", "gov", "ltd"}:
+        return labels[-3]
+    return labels[-2] if len(labels) >= 2 else (labels[0] if labels else "")
+
+
+def fingerprints(s: Session, deal: Deal) -> set[str]:
+    """Normalised fingerprints used to DETECT identity leaks that literal replacement misses (spacing,
+    punctuation, abbreviations, phone formats, "dot com" spellings). Built per identifier type so
+    that generic business words in a company name or deal title do not become forbidden."""
+    fps: set[str] = {_norm(deal.title)}
+    contacts = [s.get(Contact, deal.contact_id)]
+    company = s.get(Company, deal.company_id) if deal.company_id else None
+    if company:
+        contacts += list(s.scalars(select(Contact).where(Contact.company_id == company.id)))
+    for c in {c.id: c for c in contacts if c}.values():
+        local, domain = c.email.rsplit("@", 1)
+        fps |= {_norm(c.email), _norm(local), _domain_label(domain),
+                _norm(f"{c.first_name}{c.last_name}"), _norm(c.last_name)}
+        digits = re.sub(r"\D", "", c.phone or "")
+        if len(digits) >= 7:
+            fps.add(digits[-7:])
+    if company:
+        core = [w for w in re.split(r"[\s.,()/&-]+", company.name.lower()) if w and w not in LEGAL_SUFFIXES]
+        fps.add(_norm(" ".join(core)))
+        if core and len(core[0]) >= 5:
+            fps.add(_norm(core[0]))  # the distinctive part, e.g. "northwind" of Northwind Logistics
+        if company.website:
+            fps.add(_domain_label(re.sub(r"^https?://", "", company.website).split("/")[0]))
+    return {fp for fp in fps if len(fp) >= MIN_FINGERPRINT and fp != "client"}
 
 
 def anonymise(s: Session, deal: Deal, text: str) -> str:
@@ -90,6 +145,13 @@ def anonymise(s: Session, deal: Deal, text: str) -> str:
     for ident in _identifiers(s, deal):
         text = re.sub(re.escape(ident), name, text, flags=re.IGNORECASE)
     return text
+
+
+def leaks(s: Session, deal: Deal, text: str) -> list[str]:
+    """Fingerprints of the client still present in ``text`` (after normalisation)."""
+    norm = _norm(text.replace(code_name(deal.id), ""))
+    digits = re.sub(r"\D", "", text)
+    return sorted(fp for fp in fingerprints(s, deal) if fp in norm or (fp.isdigit() and fp in digits))
 
 
 def prepare_brief(s: Session, *, partner_id: str, deal_id: str, scope: str, actor: str) -> Document:
@@ -103,12 +165,30 @@ def prepare_brief(s: Session, *, partner_id: str, deal_id: str, scope: str, acto
     deal = s.get(Deal, deal_id)
     if deal is None:
         raise PartnerError("deal not found")
-    data = {"partner_name": partner.name, "client_code": code_name(deal.id), "scope": anonymise(s, deal, scope),
-            "region": partner.region}
+    clean_scope = anonymise(s, deal, scope)
+    if leaks(s, deal, clean_scope):
+        # Obfuscated identity (spacing, abbreviations, phone formats...) survived replacement: refuse
+        # rather than guess. The agent must describe the work without identifying the client.
+        raise PartnerError("scope still identifies the client after anonymisation; rewrite it without names, "
+                           "contact details or company references")
+    data = {"partner_name": partner.name, "partner_id": partner.id, "client_code": code_name(deal.id),
+            "scope": clean_scope, "region": partner.region}
     doc = generate(s, kind="partner_brief", title=f"Partner brief for {partner.name} ({data['client_code']})",
-                   data=data, deal_id=deal.id, actor=actor)
-    leaks = [i for i in _identifiers(s, deal) if i.lower() in doc.markdown.lower() or i.lower() in doc.html.lower()]
-    if leaks:  # defence in depth: never store a brief that still identifies the client
+                   data=data, deal_id=deal.id, actor=actor, internal=True)
+    if leaks(s, deal, doc.markdown) or leaks(s, deal, doc.html):
         raise PartnerError("brief still contains client-identifying information; refused")
     audit(s, actor, "partner.brief_prepared", doc.id, partner_id=partner.id, deal_id=deal.id)
     return doc
+
+
+def verify_brief_for_sending(s: Session, partner: Partner, doc: Document) -> None:
+    """Re-checked at send time (after owner approval too): provenance, NDA and leaks."""
+    if doc.kind != "partner_brief" or doc.data.get("partner_id") != partner.id:
+        raise PartnerError("not a system-generated brief for this partner")
+    if partner.nda_status != "on_file":
+        raise PartnerError(f"no NDA on file for {partner.name}")
+    deal = s.get(Deal, doc.deal_id) if doc.deal_id else None
+    if deal is None:
+        raise PartnerError("brief has no deal")
+    if leaks(s, deal, doc.markdown) or leaks(s, deal, doc.html):
+        raise PartnerError("brief identifies the client; refused")

@@ -311,7 +311,7 @@ def report(s: Session, tenant: Tenant, task: Task, trace: RunTrace) -> dict:
     doc = documents.generate(s, kind="executive_report", title=f"Executive report - {obj.title}", deal_id=obj.deal_id,
                              data={"objective_title": obj.title, "status": final, "summary": summary_text,
                                    "tasks": rows, "new_agents": new_agents, "spend": f"{spend:.4f}"},
-                             actor="CEO")
+                             actor="CEO", internal=True)
     obj.report_document_id, obj.status = doc.id, final
     if obj.deal_id:
         crm.log_activity(s, kind="document", deal_id=obj.deal_id,

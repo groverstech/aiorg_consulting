@@ -109,9 +109,12 @@ def main(argv: list[str] | None = None) -> int:
 
         uvicorn.run("wwos.api:app", host=args.host, port=args.port)
     elif args.cmd == "qa":
-        from . import qa
+        from . import migrate, qa
 
-        db.init_db()
+        # Read-only: never migrates. An out-of-date schema is itself a finding.
+        if migrate.current() != migrate.head():
+            print(f"[FAIL] Schema at {migrate.current()}, expected {migrate.head()} (run `wwos db upgrade`)")
+            return 1
         report = qa.run()
         print(report.render())
         return 0 if report.passed else 1

@@ -396,10 +396,13 @@ def _partners_brief(ctx: ToolContext, partner_id: str, deal_id: str, scope: str)
 def _partners_send(ctx: ToolContext, partner_id: str, document_id: str) -> dict:
     from .models import Document, Partner
 
+    from . import partners
+
     p = ctx.session.get(Partner, partner_id)
     doc = ctx.session.get(Document, document_id)
-    if p is None or doc is None or doc.kind != "partner_brief" or doc.data.get("partner_name") != p.name:
-        raise ValueError("partner or matching partner brief not found")
+    if p is None or doc is None:
+        raise ValueError("partner or brief not found")
+    partners.verify_brief_for_sending(ctx.session, p, doc)
     msg, _ = comms.draft_email(ctx.session, idempotency_key=f"partner-brief:{doc.id}", to=p.contact_email,
                                subject=f"Work brief {doc.data['client_code']}", body=doc.markdown, actor=ctx.actor)
     comms.request_send(ctx.session, msg.id)

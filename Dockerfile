@@ -2,9 +2,12 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PORT=8000
 WORKDIR /app
 RUN useradd --create-home --uid 10001 wwos
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md requirements.lock ./
 COPY wwos ./wwos
-RUN pip install --no-cache-dir ".[postgres]" && pip uninstall -y pip setuptools wheel 2>/dev/null || true
+# Pinned, reproducible dependency set (requirements.lock is produced from a clean install of the wheel).
+RUN pip install --no-cache-dir -c requirements.lock ".[postgres]" \
+ && python -c "import wwos.migrate, wwos.api, wwos.workflows" \
+ && pip uninstall -y pip setuptools wheel 2>/dev/null || true
 USER wwos
 EXPOSE 8000
 # Cloud Run sets PORT; locally it defaults to 8000. Proxy headers are trusted only from

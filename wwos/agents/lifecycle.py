@@ -24,6 +24,9 @@ from ..models import Agent, Department, Tenant
 from ..policy import PROVISIONING_TOOLS, audit
 
 LIVE_STATUSES = ("draft", "testing", "active", "suspended")
+# Roles the system routes work by (find_agent). Only the owner may create agents with these roles,
+# so an agent-created specialist can never take over workflow, QA or recovery routing.
+RESERVED_ROLES = {"ceo", "technology", "sales", "delivery", "finance", "marketing", "legal", "operations", "qa"}
 OWNER = "owner"
 
 
@@ -42,6 +45,7 @@ def _live_count(s: Session) -> int:
 
 
 def validate_spec(s: Session, tenant: Tenant, *, creator: Agent | None, tools: list[str], model: str,
+                  role: str = "",
                   monthly_budget_usd: Decimal, can_provision: bool, instructions: str,
                   replacing_agent_id: str | None = None, baseline_tools: list[str] | None = None) -> None:
     cfg = get_settings()
@@ -64,6 +68,8 @@ def validate_spec(s: Session, tenant: Tenant, *, creator: Agent | None, tools: l
         )
     if replacing_agent_id is None and _live_count(s) >= cfg.max_agents_per_tenant:
         raise ProvisioningError(f"agent ceiling of {cfg.max_agents_per_tenant} reached")
+    if creator is not None and role in RESERVED_ROLES and replacing_agent_id is None:
+        raise ProvisioningError(f"role {role!r} is reserved for founding agents; use a specialist role name")
     if creator is not None:
         # A creator may grant tools it holds, and keep (never add to) an existing agent's tools.
         extra = set(tools) - set(creator.tools or []) - set(baseline_tools or [])
@@ -122,7 +128,7 @@ def provision(s: Session, tenant: Tenant, *, name: str, role: str, department_co
               baseline_tools: list[str] | None = None, trace=None) -> Agent:
     model = model or get_settings().default_model
     budget = Decimal(str(monthly_budget_usd))
-    validate_spec(s, tenant, creator=creator, tools=tools, model=model, monthly_budget_usd=budget,
+    validate_spec(s, tenant, creator=creator, tools=tools, model=model, monthly_budget_usd=budget, role=role,
                   can_provision=can_provision, instructions=instructions, replacing_agent_id=replacing_agent_id,
                   baseline_tools=baseline_tools)
     dept = s.scalars(select(Department).where(Department.code == department_code)).first()

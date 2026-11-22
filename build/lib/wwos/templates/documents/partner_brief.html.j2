@@ -1,0 +1,7 @@
+{% extends "_base.html.j2" %}{% set doc_kind = "Partner work brief" %}{% set client_name = client_code %}
+{% block body %}
+<h1>Work brief for {{ partner_name }}</h1>
+<p class="meta">Confidential. Provided under the non-disclosure agreement between {{ company.name }} and {{ partner_name }}. The end client is identified only by the code {{ client_code }}; do not attempt to identify or contact the end client.</p>
+<h2>Scope of work</h2><p>{{ scope }}</p>
+<p class="meta">All commercial terms, timelines and commitments are subject to written confirmation by an authorised signatory of {{ company.name }}.</p>
+{% endblock %}
