@@ -316,13 +316,15 @@ class PartnerIn(BaseModel):
     region: str
     contact_email: str
     services: str = ""
+    category: str = "other"
 
 
 @app.get("/api/partners")
 def list_partners(s: Session = Depends(viewer_session)) -> list[dict]:
     from .models import Partner
 
-    return [_row(p, "id", "name", "region", "services", "contact_email", "nda_status", "nda_attested_by", "status",
+    return [_row(p, "id", "name", "region", "category", "services", "contact_email", "status", "pipeline_stage",
+                 "stage_note", "nda_status", "nda_attested_by", "agreement_confirmed_by", "credentials_verified_by",
                  "created_by", "created_at") for p in s.scalars(select(Partner).order_by(Partner.name))]
 
 
@@ -353,6 +355,37 @@ def attest_nda(partner_id: str, body: NdaIn, p: Principal = Depends(require("own
     except partners.PartnerError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     return {"id": partner.id, "nda_status": partner.nda_status, "status": partner.status}
+
+
+class ConfirmIn(BaseModel):
+    agreement_on_file: bool
+    credentials_verified: bool = False
+
+
+@app.post("/api/partners/{partner_id}/confirm")
+def confirm_partner(partner_id: str, body: ConfirmIn, p: Principal = Depends(require("owner")),
+                    s: Session = Depends(owner_session)) -> dict:
+    """Owner confirmation that a partnership agreement (and NDA) is in place. Until then the firm is a
+    prospect: agents may approach it (owner-approved messages) but never share work with it."""
+    from . import partners
+
+    try:
+        partner = partners.confirm(s, partner_id, actor=f"owner:{p.key_name}", **body.model_dump())
+    except partners.PartnerError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"id": partner.id, "status": partner.status}
+
+
+@app.post("/api/partners/{partner_id}/deactivate")
+def deactivate_partner(partner_id: str, p: Principal = Depends(require("owner")),
+                       s: Session = Depends(owner_session)) -> dict:
+    from . import partners
+
+    try:
+        partner = partners.deactivate(s, partner_id, actor=f"owner:{p.key_name}")
+    except partners.PartnerError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"id": partner.id, "status": partner.status}
 
 
 # ---------------------------------------------------------------- CEO objectives

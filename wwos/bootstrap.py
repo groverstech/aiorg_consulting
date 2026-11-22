@@ -36,7 +36,8 @@ FOUNDING_AGENTS = [
     dict(name="CEO", role="ceo", department_code="executive", can_provision=True, monthly_budget_usd="60",
          tools=MGMT + ["budget.status", "budget.request_increase", "crm.pipeline_summary", "deals.get",
                        "objectives.add_task", "objectives.status", "partners.list", "partners.register",
-                       "partners.prepare_brief", "partners.send_brief"],
+                       "partners.update_stage", "partners.prepare_brief", "partners.send_brief",
+                       "comms.draft_email", "comms.send_email"],
          instructions=(
              "You run White Waters Consulting Group day to day on behalf of the owner. Review the pipeline, "
              "budget and agent workforce, decide priorities, delegate work to department agents with "
@@ -49,7 +50,8 @@ FOUNDING_AGENTS = [
              "cause, then replace it or publish an improved version (agents.revise) that must pass automated "
              "acceptance tests. Choose the least expensive approved model that does the job reliably.")),
     dict(name="Sales Lead", role="sales", department_code="sales", monthly_budget_usd="60",
-         tools=CRM_ALL + ["docs.generate", "comms.draft_email", "comms.send_email", "partners.list"],
+         tools=CRM_ALL + ["docs.generate", "comms.draft_email", "comms.send_email", "partners.list",
+                          "partners.register", "partners.update_stage"],
          instructions=(
              "You qualify inbound leads, maintain accurate CRM records, prepare proposals and correspond with "
              "prospects professionally. Never promise prices, dates or terms that are not in the CRM or an "

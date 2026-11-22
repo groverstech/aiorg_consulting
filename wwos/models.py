@@ -301,11 +301,14 @@ class OutboundMessage(Base, TenantScoped):
 
 
 class Partner(Base, TenantScoped):
-    """An external delivery partner (Indian partner firm or international service provider).
+    """A partner firm: Indian CA/CS firms and international service providers.
 
-    ``nda_status`` is a legal fact attested only by the owner ("on_file"); agents can register
-    prospective partners but can never mark an NDA as signed. Partners only ever receive
-    anonymised briefs, never client identities (see partners.py).
+    Acquisition pipeline (agents may move a prospect through these stages):
+        identified -> contacted -> in_discussion -> nda_requested   (or declined)
+    Only the OWNER can confirm a partner (status "confirmed"), which requires an NDA on file and
+    the owner's confirmation that a partnership agreement exists. ``category`` is what the partner
+    states about itself and is unverified until the owner attests ``credentials_verified_by``.
+    Partners only ever receive anonymised briefs, and only once confirmed (see partners.py).
     """
 
     __tablename__ = "partners"
@@ -318,7 +321,12 @@ class Partner(Base, TenantScoped):
     email_domain: Mapped[str] = mapped_column(String(200), index=True)
     nda_status: Mapped[str] = mapped_column(String(20), default="none")  # none | on_file
     nda_attested_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    status: Mapped[str] = mapped_column(String(20), default="prospect")  # prospect | active | inactive
+    status: Mapped[str] = mapped_column(String(20), default="prospect")  # prospect | confirmed | inactive
+    category: Mapped[str] = mapped_column(String(30), default="other")
+    pipeline_stage: Mapped[str] = mapped_column(String(20), default="identified")
+    credentials_verified_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    agreement_confirmed_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    stage_note: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str] = mapped_column(String(120), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

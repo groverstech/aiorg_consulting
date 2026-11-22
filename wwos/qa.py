@@ -171,19 +171,26 @@ def run() -> Report:
             leaked = [i for i in idents if i and i.lower() in text]
             if leaked:
                 problems.append(f"partner brief {d.id} contains client identifiers")
-        partner_domains = {(p.tenant_id, p.email_domain): p for p in s.scalars(select(Partner))}
+        partners_by_tenant: dict[str, list] = {}
+        for p in s.scalars(select(Partner)):
+            partners_by_tenant.setdefault(p.tenant_id, []).append(p)
         for m in s.scalars(select(OutboundMessage).where(OutboundMessage.status.in_(["queued", "sending", "sent"]))):
-            p = partner_domains.get((m.tenant_id, m.to_address.rsplit("@", 1)[-1]))
+            domain = m.to_address.rsplit("@", 1)[-1]
+            p = next((x for x in partners_by_tenant.get(m.tenant_id, [])
+                      if domain == x.email_domain or domain.endswith("." + x.email_domain)), None)
             if p is None:
                 continue
-            if p.nda_status != "on_file":
-                problems.append(f"message {m.id} to partner {p.name} without an NDA on file")
             approved = [a for a in s.scalars(select(ApprovalRequest).where(
-                ApprovalRequest.tenant_id == m.tenant_id, ApprovalRequest.category == "confidential_disclosure",
+                ApprovalRequest.tenant_id == m.tenant_id,
+                ApprovalRequest.category.in_(["confidential_disclosure", "partner_outreach"]),
                 ApprovalRequest.status.in_(["approved", "executed"])))
                 if (a.params or {}).get("message_id") == m.id or (a.result or {}).get("message_id") == m.id]
             if not approved:
-                problems.append(f"message {m.id} to partner {p.name} without an approved disclosure")
+                problems.append(f"message {m.id} to partner {p.name} without an owner-approved request")
+        for d in s.scalars(select(Document).where(Document.kind == "partner_brief")):
+            p = s.get(Partner, (d.data or {}).get("partner_id"))
+            if p is None or p.nda_status != "on_file" or p.agreement_confirmed_by is None:
+                problems.append(f"partner brief {d.id} prepared for a partner without NDA and confirmed agreement")
         rep.add("Confidentiality: partner briefs anonymised, partner mail approved", problems)
 
         # 9. Workflow reliability.

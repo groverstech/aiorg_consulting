@@ -12,7 +12,7 @@ from tests.simulated_org import SimulatedOrganisation
 from wwos import llm, qa, workflows
 from wwos.api import app
 from wwos.db import tenant_session
-from wwos.models import Activity, Agent, Deal, Document
+from wwos.models import Activity, Agent, ApprovalRequest, Deal, Document
 
 pytestmark = pytest.mark.acceptance
 
@@ -37,6 +37,7 @@ def test_ceo_runs_an_objective_end_to_end_without_human_intervention(tenant):
             "name": "Pune Analytics Pvt Ltd", "region": "india", "contact_email": "projects@pune-analytics.example",
             "services": "data analysis"}).json()
         c.post(f"/api/partners/{partner['id']}/nda", json={"on_file": True}, headers=H(key))
+        c.post(f"/api/partners/{partner['id']}/confirm", json={"agreement_on_file": True}, headers=H(key))
 
         # 1. The owner gives the CEO a business objective.
         llm.set_provider(sim)
@@ -103,28 +104,60 @@ def test_ceo_runs_an_objective_end_to_end_without_human_intervention(tenant):
     assert qa.run().passed, qa.run().render()
 
 
-def test_partner_disclosure_always_needs_owner_and_nda(tenant):
-    from wwos import comms
+def test_partner_acquisition_outreach_is_owner_approved_and_prospects_get_no_work(tenant):
+    """Agents may approach a prospective CA/CS firm, but every message waits for the owner (with
+    preview), no work brief can go to an unconfirmed partner, and agents can never confirm one."""
+    from wwos import approvals, comms, crm, partners, workflows
     from wwos.agents.runtime import execute_tool, find_agent
     from wwos.models import Tenant
     from wwos.tools import ToolContext
 
     tid, key = tenant
-    with TestClient(app) as c:
-        p = c.post("/api/partners", headers=H(key), json={
-            "name": "Global Research LLC", "region": "international",
-            "contact_email": "desk@global-research.example"}).json()
     with tenant_session(tid) as s:
-        ctx = ToolContext(s, s.get(Tenant, tid), find_agent(s, role="sales"))
-        draft, _ = execute_tool(ctx, "comms.draft_email", {"idempotency_key": "p1", "to": "desk@global-research.example",
-                                                           "subject": "Hello", "body": "Client details..."})
-        out, err = execute_tool(ctx, "comms.send_email", {"message_id": draft["message_id"]})
-        assert out["status"] == "pending_owner_approval" and out["category"] == "confidential_disclosure"
-        # Even if the owner approved it, no NDA means nothing is sent.
-        with pytest.raises(ValueError, match="NDA"):
-            comms.request_send(s, draft["message_id"])
-        # Agents cannot mark an NDA as signed: no tool exists for it, and the API is owner-only.
-        assert not any("nda" in t for t in find_agent(s, role="ceo").tools)
+        sales = ToolContext(s, s.get(Tenant, tid), find_agent(s, role="sales"))
+        reg, err = execute_tool(sales, "partners.register", {
+            "name": "Sharma & Co Chartered Accountants", "region": "india", "category": "ca_firm",
+            "contact_email": "partners@sharmaco.example", "services": "statutory audit, GST"})
+        assert not err and reg["status"] == "prospect" and reg["stage"] == "identified"
+        pid = reg["partner_id"]
+        out, err = execute_tool(sales, "partners.update_stage", {"partner_id": pid, "stage": "contacted"})
+        assert not err
+        out, err = execute_tool(sales, "partners.update_stage", {"partner_id": pid, "stage": "confirmed"})
+        assert err and "reserved for the owner" in out["error"]
+        draft, _ = execute_tool(sales, "comms.draft_email", {
+            "idempotency_key": "intro", "to": "partners@sharmaco.example", "subject": "Partnership enquiry",
+            "body": "We are exploring a referral partnership with CA firms."})
+        sent, _ = execute_tool(sales, "comms.send_email", {"message_id": draft["message_id"]})
+        assert sent["status"] == "pending_owner_approval" and sent["category"] == "partner_outreach"
+        # No work can be shared with a prospect, even with an NDA on file.
+        partners.attest_nda(s, pid, on_file=True, actor="owner")
+        c, _ = crm.upsert_contact(s, email="x@client.example", first_name="X")
+        deal = crm.create_deal(s, contact_id=c.id, title="Audit support", value="100")
+        with pytest.raises(partners.PartnerError, match="not confirmed"):
+            partners.prepare_brief(s, partner_id=pid, deal_id=deal.id, scope="Audit support work.", actor="CEO")
+        req = s.scalars(select(ApprovalRequest)).one()
+        approvals.decide(s, req.id, approve=True, actor="owner")
+    workflows.drain()
+    assert len(comms.OutboxTransport.delivered) == 1  # the approved introduction, nothing else
+    with TestClient(app) as cl:
+        listing = cl.get("/api/partners", headers=H(key)).json()[0]
+        assert listing["status"] == "prospect" and listing["category"] == "ca_firm"
+        assert listing["credentials_verified_by"] is None  # stated category, not verified
+        bad = cl.post(f"/api/partners/{pid}/confirm", json={"agreement_on_file": False}, headers=H(key))
+        assert bad.status_code == 400
+        ok = cl.post(f"/api/partners/{pid}/confirm", json={"agreement_on_file": True, "credentials_verified": True},
+                     headers=H(key)).json()
+        assert ok["status"] == "confirmed"
+
+
+def test_ca_cs_categories_only_for_indian_partners(tenant):
+    from wwos import partners
+
+    tid, _ = tenant
+    with tenant_session(tid) as s:
+        with pytest.raises(partners.PartnerError, match="Indian"):
+            partners.register(s, name="X", region="international", category="ca_firm",
+                              contact_email="a@x.example", actor="owner")
 
 
 def test_operator_cannot_attest_nda_or_start_objectives(tenant):

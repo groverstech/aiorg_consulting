@@ -31,10 +31,19 @@ class PartnerError(ValueError):
     pass
 
 
+CATEGORIES = ("ca_firm", "cs_firm", "ca_cs_firm", "international_provider", "other")
+AGENT_STAGES = ("identified", "contacted", "in_discussion", "nda_requested", "declined")
+
+
 def register(s: Session, *, name: str, region: str, contact_email: str, services: str = "",
-             actor: str) -> Partner:
+             category: str = "other", actor: str) -> Partner:
+    """Record a PROSPECTIVE partner. Nothing here confirms a relationship."""
     if region not in REGIONS:
         raise PartnerError(f"region must be one of {REGIONS}")
+    if category not in CATEGORIES:
+        raise PartnerError(f"category must be one of {CATEGORIES}")
+    if category in ("ca_firm", "cs_firm", "ca_cs_firm") and region != "india":
+        raise PartnerError("CA/CS firm categories apply to Indian partners")
     email = _norm_email(contact_email)
     name = (name or "").strip()
     if not name:
@@ -42,25 +51,74 @@ def register(s: Session, *, name: str, region: str, contact_email: str, services
     existing = s.scalars(select(Partner).where(func.lower(Partner.name) == name.lower())).first()
     if existing:
         return existing
-    p = Partner(name=name, region=region, services=services, contact_email=email,
+    p = Partner(name=name, region=region, services=services, contact_email=email, category=category,
                 email_domain=email.rsplit("@", 1)[1], created_by=actor)
     s.add(p)
     s.flush()
-    audit(s, actor, "partner.registered", p.id, name=name, region=region)
+    audit(s, actor, "partner.registered", p.id, name=name, region=region, category=category)
+    return p
+
+
+def update_stage(s: Session, partner_id: str, *, stage: str, note: str = "", actor: str) -> Partner:
+    """Agents move prospects through the acquisition pipeline; they can never confirm a partner."""
+    p = s.get(Partner, partner_id)
+    if p is None:
+        raise PartnerError("partner not found")
+    if stage not in AGENT_STAGES:
+        raise PartnerError(f"stage must be one of {AGENT_STAGES}; confirmation is reserved for the owner")
+    if p.status == "confirmed":
+        raise PartnerError("partner is already confirmed; only the owner can change a confirmed partner")
+    p.pipeline_stage, p.stage_note = stage, note[:2000]
+    audit(s, actor, "partner.stage", p.id, stage=stage)
     return p
 
 
 def attest_nda(s: Session, partner_id: str, *, on_file: bool, actor: str) -> Partner:
-    """Owner-only (enforced by the API): record that a signed NDA is (or is no longer) on file."""
+    """Owner-only (enforced by the API): record that a signed NDA is (or is no longer) on file.
+    An NDA alone does not confirm a partner."""
     p = s.get(Partner, partner_id)
     if p is None:
         raise PartnerError("partner not found")
     p.nda_status = "on_file" if on_file else "none"
     p.nda_attested_by = actor if on_file else None
-    if on_file and p.status == "prospect":
-        p.status = "active"
+    if not on_file and p.status == "confirmed":
+        p.status = "prospect"  # no NDA, no work sharing
+        p.agreement_confirmed_by = None
     audit(s, actor, "partner.nda_attested", p.id, on_file=on_file)
     return p
+
+
+def confirm(s: Session, partner_id: str, *, agreement_on_file: bool, credentials_verified: bool,
+            actor: str) -> Partner:
+    """Owner-only: confirm a partnership (requires NDA on file and an agreement the owner has signed)."""
+    p = s.get(Partner, partner_id)
+    if p is None:
+        raise PartnerError("partner not found")
+    if p.nda_status != "on_file":
+        raise PartnerError("attest the NDA first; a partner cannot be confirmed without one")
+    if not agreement_on_file:
+        raise PartnerError("a partner is confirmed only when a partnership agreement is on file")
+    p.status, p.pipeline_stage, p.agreement_confirmed_by = "confirmed", "confirmed", actor
+    if credentials_verified:
+        p.credentials_verified_by = actor
+    audit(s, actor, "partner.confirmed", p.id, credentials_verified=credentials_verified)
+    return p
+
+
+def deactivate(s: Session, partner_id: str, *, actor: str) -> Partner:
+    p = s.get(Partner, partner_id)
+    if p is None:
+        raise PartnerError("partner not found")
+    p.status = "inactive"
+    audit(s, actor, "partner.deactivated", p.id)
+    return p
+
+
+def require_confirmed(partner: Partner) -> None:
+    if partner.status != "confirmed":
+        raise PartnerError(f"{partner.name} is a prospective partner, not confirmed by the owner; no work may be shared")
+    if partner.nda_status != "on_file":
+        raise PartnerError(f"no NDA on file for {partner.name}")
 
 
 def _domain_matches(domain: str, partner_domain: str) -> bool:
@@ -209,8 +267,7 @@ def prepare_brief(s: Session, *, partner_id: str, deal_id: str, scope: str, acto
     partner = s.get(Partner, partner_id)
     if partner is None:
         raise PartnerError("partner not found")
-    if partner.nda_status != "on_file":
-        raise PartnerError(f"no NDA on file for {partner.name}; the owner must attest one before sharing work")
+    require_confirmed(partner)
     deal = s.get(Deal, deal_id)
     if deal is None:
         raise PartnerError("deal not found")
@@ -234,8 +291,7 @@ def verify_brief_for_sending(s: Session, partner: Partner, doc: Document) -> Non
     """Re-checked at send time (after owner approval too): provenance, NDA and leaks."""
     if doc.kind != "partner_brief" or doc.data.get("partner_id") != partner.id:
         raise PartnerError("not a system-generated brief for this partner")
-    if partner.nda_status != "on_file":
-        raise PartnerError(f"no NDA on file for {partner.name}")
+    require_confirmed(partner)
     deal = s.get(Deal, doc.deal_id) if doc.deal_id else None
     if deal is None:
         raise PartnerError("brief has no deal")

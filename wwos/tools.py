@@ -368,18 +368,33 @@ def _partners_list(ctx: ToolContext) -> dict:
     from .models import Partner
 
     rows = ctx.session.scalars(select(Partner).order_by(Partner.name)).all()
-    return {"partners": [{"id": p.id, "name": p.name, "region": p.region, "services": p.services,
-                          "nda_status": p.nda_status, "status": p.status} for p in rows]}
+    return {"partners": [{"id": p.id, "name": p.name, "region": p.region, "category": p.category,
+                          "services": p.services, "status": p.status, "stage": p.pipeline_stage,
+                          "nda_status": p.nda_status, "confirmed": p.status == "confirmed",
+                          "credentials_verified": p.credentials_verified_by is not None} for p in rows]}
 
 
-@tool("partners.register", "Record a prospective partner firm. NDA status can only be set by the owner.",
-      {"name": S, "region": S, "contact_email": S, "services": S}, ["name", "region", "contact_email"])
-def _partners_register(ctx: ToolContext, name: str, region: str, contact_email: str, services: str = "") -> dict:
+@tool("partners.register",
+      "Record a PROSPECTIVE partner firm (category: ca_firm, cs_firm, ca_cs_firm, international_provider, other; "
+      "as stated by the firm, unverified). Only the owner can confirm a partner or record an NDA.",
+      {"name": S, "region": S, "contact_email": S, "services": S, "category": S}, ["name", "region", "contact_email"])
+def _partners_register(ctx: ToolContext, name: str, region: str, contact_email: str, services: str = "",
+                       category: str = "other") -> dict:
     from . import partners
 
     p = partners.register(ctx.session, name=name, region=region, contact_email=contact_email,
-                          services=services, actor=ctx.actor)
-    return {"partner_id": p.id, "nda_status": p.nda_status}
+                          services=services, category=category, actor=ctx.actor)
+    return {"partner_id": p.id, "status": p.status, "stage": p.pipeline_stage, "nda_status": p.nda_status}
+
+
+@tool("partners.update_stage",
+      "Move a prospective partner through acquisition: identified, contacted, in_discussion, nda_requested, declined.",
+      {"partner_id": S, "stage": S, "note": S}, ["partner_id", "stage"])
+def _partners_stage(ctx: ToolContext, partner_id: str, stage: str, note: str = "") -> dict:
+    from . import partners
+
+    p = partners.update_stage(ctx.session, partner_id, stage=stage, note=note, actor=ctx.actor)
+    return {"partner_id": p.id, "stage": p.pipeline_stage, "status": p.status}
 
 
 @tool("partners.prepare_brief", "Prepare an anonymised work brief for a partner (client identity removed).",

@@ -21,6 +21,7 @@ def setup(tenant):
         p = partners.register(s, name="Mumbai Partners", region="india",
                               contact_email="desk@mumbaipartners.in", actor="owner")
         partners.attest_nda(s, p.id, on_file=True, actor="owner")
+        partners.confirm(s, p.id, agreement_on_file=True, credentials_verified=False, actor="owner")
         return tid, deal.id, p.id
 
 
@@ -136,6 +137,7 @@ def test_generic_mailboxes_and_short_names_do_not_break_ordinary_text(tenant):
         deal = crm.create_deal(s, contact_id=c.id, title="Fleet review", value="100")
         p = partners.register(s, name="P1", region="india", contact_email="a@p1.example", actor="owner")
         partners.attest_nda(s, p.id, on_file=True, actor="owner")
+        partners.confirm(s, p.id, agreement_on_file=True, credentials_verified=False, actor="owner")
         doc = partners.prepare_brief(s, partner_id=p.id, deal_id=deal.id, actor="CEO",
                                      scope="We need information about the fleet; smithing and client lists.")
         assert "information" in doc.markdown and "client lists" in doc.markdown and "CClient" not in doc.markdown

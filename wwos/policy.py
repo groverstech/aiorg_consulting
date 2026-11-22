@@ -26,7 +26,8 @@ OWNER_AUTHORITY_CATEGORIES = {
     "irreversible_production": "Irreversible actions affecting production data or infrastructure",
     "business_policy": "Fundamental business policy decisions",
     "external_communication": "Outbound communication to external parties (owner policy, see ADR-006)",
-    "confidential_disclosure": "Any disclosure to a partner firm (Indian or international); always owner-approved",
+    "confidential_disclosure": "Any disclosure to a confirmed partner firm (Indian or international); always owner-approved",
+    "partner_outreach": "Any message to a prospective (unconfirmed) partner; always owner-approved",
 }
 
 # Tools whose execution always requires owner approval, mapped to category.
@@ -70,8 +71,9 @@ def approval_category(tool: str, args: dict, session: Session | None = None) -> 
             from .partners import partner_for_address
 
             msg = session.get(OutboundMessage, args.get("message_id"))
-            if msg is not None and partner_for_address(session, msg.to_address) is not None:
-                return "confidential_disclosure"  # partners: always owner-approved, whatever the policy
+            partner = partner_for_address(session, msg.to_address) if msg is not None else None
+            if partner is not None:  # partners: always owner-approved, whatever the e-mail policy
+                return "confidential_disclosure" if partner.status == "confirmed" else "partner_outreach"
         if get_settings().external_email_requires_approval:
             return "external_communication"
     return None

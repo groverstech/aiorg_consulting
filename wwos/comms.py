@@ -217,8 +217,8 @@ def request_send(s: Session, message_id: str) -> OutboundMessage:
     from .partners import partner_for_address
 
     partner = partner_for_address(s, msg.to_address)
-    if partner is not None and partner.nda_status != "on_file":
-        raise ValueError(f"no NDA on file for partner {partner.name}; nothing may be sent to them")
+    if partner is not None and partner.status == "inactive":
+        raise ValueError(f"partner {partner.name} is inactive; nothing may be sent to them")
     msg.status = "queued"
     return msg
 
