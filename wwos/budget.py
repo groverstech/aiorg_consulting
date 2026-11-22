@@ -88,8 +88,9 @@ def worst_case_estimate(model: str, prompt_chars: int, max_tokens: int) -> Decim
 
 
 def record(session: Session, *, agent_id: str | None, task_id: str | None, model: str,
-           input_tokens: int, output_tokens: int) -> CostEntry:
+           input_tokens: int, output_tokens: int, reservation_id: str | None = None) -> CostEntry:
     entry = CostEntry(
+        reservation_id=reservation_id,
         agent_id=agent_id,
         task_id=task_id,
         model=model,

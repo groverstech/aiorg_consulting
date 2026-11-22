@@ -26,7 +26,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import crm, documents
+from . import budget_guard, crm, documents
 from .agents.runtime import RunTrace, execute_tool, find_agent, persist_spend, run_agent_prompt
 from .budget import BudgetExceeded
 from .config import get_settings
@@ -320,10 +320,9 @@ def process(task_id: str, tenant_id: str, token: str) -> str:
         return "succeeded"
     except Exception as e:  # noqa: BLE001
         error = e
-    # Failure path: the step's transaction was rolled back. Record what must survive.
-    trace.persisted = 0  # the failed transaction rolled back every ledger write
+    # Failure path: the step's transaction was rolled back. Its model spend was already written to
+    # the ledger by the rollback hook (budget_guard.after_rollback), exactly once per reservation.
     with tenant_session(tenant_id) as s:
-        persist_spend(s, trace)
         if isinstance(error, LeaseLost):
             log.warning("%s", error)
             return "lease_lost"
@@ -381,6 +380,7 @@ def run_worker(poll_seconds: float = 2.0, max_tasks: int | None = None, stop_whe
 
     done = 0
     last_tick = 0.0
+    last_reconcile = 0.0
     while max_tasks is None or done < max_tasks:
         if scheduled and time.monotonic() - last_tick >= 60:
             try:
@@ -392,6 +392,12 @@ def run_worker(poll_seconds: float = 2.0, max_tasks: int | None = None, stop_whe
             comms.dispatch(tenant_id=tenant_id)
         except Exception:  # noqa: BLE001 - delivery problems must never stop task processing
             log.exception("outbox dispatch failed")
+        if time.monotonic() - last_reconcile >= 60:
+            try:
+                budget_guard.store().reconcile_expired()  # reservations of crashed workers
+            except Exception:  # noqa: BLE001
+                log.exception("budget reconciliation failed")
+            last_reconcile = time.monotonic()
         claimed = claim_next(tenant_id=tenant_id)
         if claimed is None:
             if stop_when_idle:

@@ -33,4 +33,8 @@ wwos = ["templates/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["acceptance: end-to-end acceptance tests owned by the QA function"]
+markers = [
+  "acceptance: end-to-end acceptance tests owned by the QA function",
+  "postgres: requires WWOS_TEST_PG_URL",
+  "browser: requires Playwright and a Chromium binary",
+]

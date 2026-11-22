@@ -23,6 +23,8 @@ def _env_bool(name: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class Settings:
+    # "development" (default) or "production". Production refuses unsafe configuration.
+    environment: str = field(default_factory=lambda: _env("WWOS_ENV", "development"))
     database_url: str = field(default_factory=lambda: _env("WWOS_DATABASE_URL", "sqlite:///./var/wwos.db"))
     # "offline" uses a deterministic local provider (no network, no spend).
     # "anthropic" calls the Claude API; credentials resolve from the environment.

@@ -2,8 +2,9 @@
 
 For each model turn:
   1. Estimate worst-case cost and refuse if agent or org budget would be exceeded.
-  2. Call the provider; append actual spend to the RunTrace (the caller persists
-     it with ``persist_spend`` on success *and* failure).
+  2. Reserve budget atomically, call the provider, record the actual cost on the
+     reservation. The ledger entry is written when the enclosing transaction ends,
+     whether it commits or rolls back (budget_guard).
   3. For each tool call: check permission -> if owner-gated, file an
      ApprovalRequest instead of executing -> otherwise run the handler inside a
      SAVEPOINT so a failing tool cannot corrupt the transaction.
@@ -18,7 +19,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import budget
+from .. import budget, budget_guard
 from ..llm import get_provider
 from ..models import Agent, ApprovalRequest, Department, Tenant
 from ..policy import PermissionDenied, approval_category, audit, check_tool_permission
@@ -34,6 +35,7 @@ class SpendRecord:
     model: str
     input_tokens: int
     output_tokens: int
+    reservation_id: str | None = None
 
 
 @dataclass
@@ -121,13 +123,21 @@ def run_agent_prompt(s: Session, tenant: Tenant, agent: Agent, prompt: str, *, m
     for _turn in range(MAX_TURNS):
         prompt_chars = len(system) + len(json.dumps(messages, default=str)) + len(json.dumps(tool_defs))
         estimate = budget.worst_case_estimate(agent.model, prompt_chars, max_tokens)
-        # Unpersisted spend from this run (and any parent run sharing the trace) counts too.
-        budget.ensure_can_spend(s, tenant, agent, estimate, agent_pending=pending_spend(trace, agent.id),
-                                org_pending=pending_spend(trace))
-        result = provider.complete(model=agent.model, system=system, messages=messages, tools=tool_defs,
-                                   max_tokens=max_tokens)
-        trace.spend.append(SpendRecord(agent.id, task_id, _price_model(agent.model, result.model),
-                                       result.input_tokens, result.output_tokens))
+        # Atomic reservation (agent + organisation limits) before the call; see budget_guard.
+        guard = budget_guard.store()
+        rid = guard.reserve(tenant_id=tenant.id, agent_id=agent.id, agent_name=agent.name,
+                            agent_budget=agent.monthly_budget_usd, task_id=task_id, estimate=estimate)
+        budget_guard.track(s, rid)
+        try:
+            result = provider.complete(model=agent.model, system=system, messages=messages, tools=tool_defs,
+                                       max_tokens=max_tokens)
+        except Exception:
+            guard.release(rid)  # nothing billed (errors are raised before a response is produced)
+            raise
+        billed_model = _price_model(agent.model, result.model)
+        guard.incur(rid, model=billed_model, input_tokens=result.input_tokens, output_tokens=result.output_tokens)
+        trace.spend.append(SpendRecord(agent.id, task_id, billed_model, result.input_tokens,
+                                       result.output_tokens, reservation_id=rid))
         messages.append({"role": "assistant", "content": result.content})
         if result.stop_reason != "tool_use" or not result.tool_calls:
             final_text = result.text
@@ -145,21 +155,8 @@ def run_agent_prompt(s: Session, tenant: Tenant, agent: Agent, prompt: str, *, m
     return final_text
 
 
-def pending_spend(trace: RunTrace, agent_id: str | None = None) -> Decimal:
-    recs = [r for r in trace.spend[trace.persisted:] if agent_id is None or r.agent_id == agent_id]
-    return sum((budget.cost_of(r.model, r.input_tokens, r.output_tokens) for r in recs), Decimal("0"))
-
-
 def persist_spend(s: Session, trace: RunTrace) -> None:
-    """Write not-yet-persisted spend to the ledger. Callers own when this happens so that
-    spend is never lost to a rolled-back savepoint or transaction."""
-    for rec in trace.spend[trace.persisted:]:
-        # The agent may have been created inside a transaction that was rolled back (e.g. the
-        # acceptance test of an agent whose provisioning failed). The money was still spent, so
-        # it is recorded against the organisation without the agent link.
-        agent_id = rec.agent_id if rec.agent_id and s.get(Agent, rec.agent_id) is not None else None
-        budget.record(s, agent_id=agent_id, task_id=rec.task_id, model=rec.model,
-                      input_tokens=rec.input_tokens, output_tokens=rec.output_tokens)
+    """Kept for API compatibility: the ledger is now written by budget_guard when the session ends."""
     trace.persisted = len(trace.spend)
 
 

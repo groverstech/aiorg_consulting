@@ -107,17 +107,51 @@ class Agent(Base, TenantScoped):
 
 
 class CostEntry(Base, TenantScoped):
-    """Immutable ledger of model spend."""
+    """Immutable ledger of model spend.
+
+    ``agent_id`` deliberately has no foreign key: the ledger records money actually spent, which
+    must survive even when the agent's own creation was rolled back (e.g. a failed acceptance test).
+    ``reservation_id`` is unique, so a reservation can be converted into spend exactly once.
+    """
 
     __tablename__ = "cost_entries"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.id"), nullable=True, index=True)
+    agent_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    reservation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
     task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     model: Mapped[str] = mapped_column(String(60))
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[Decimal] = mapped_column(Money)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class BudgetLock(Base, TenantScoped):
+    """One row per tenant, locked (SELECT ... FOR UPDATE) to serialise budget reservations."""
+
+    __tablename__ = "budget_locks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    __table_args__ = (UniqueConstraint("tenant_id"),)
+
+
+class BudgetReservation(Base, TenantScoped):
+    """Spend reserved before a model call and reconciled after it.
+
+    reserved -> incurred (actual cost known) -> settled (in the ledger) | released (call never billed)
+    """
+
+    __tablename__ = "budget_reservations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    agent_id: Mapped[str] = mapped_column(String(36), index=True)
+    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    estimate_usd: Mapped[Decimal] = mapped_column(Money)
+    actual_usd: Mapped[Decimal | None] = mapped_column(Money, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(12), default="reserved", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class Task(Base, TenantScoped):

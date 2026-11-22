@@ -78,7 +78,12 @@ def _make_engine(url: str) -> Engine:
 
         @event.listens_for(engine, "begin")
         def _sqlite_begin(conn):  # pragma: no cover - driver hook
-            conn.exec_driver_sql("BEGIN")
+            # Short write paths opt into BEGIN IMMEDIATE (write lock up front) so concurrent
+            # read-then-write transactions queue on busy_timeout instead of deadlocking.
+            if conn.get_execution_options().get("sqlite_immediate"):
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
+            else:
+                conn.exec_driver_sql("BEGIN")
 
     return engine
 
@@ -100,10 +105,26 @@ def engine() -> Engine:
     return _engine
 
 
-def init_db() -> None:
-    from . import models  # noqa: F401  (register mappers)
+@contextmanager
+def write_transaction():
+    """A short, independent read-then-write transaction outside any business session."""
+    with engine().connect() as conn:
+        conn = conn.execution_options(sqlite_immediate=True)
+        with conn.begin():
+            yield conn
 
-    Base.metadata.create_all(engine())
+
+def init_db() -> None:
+    """Bring the schema to the latest revision via migrations (never ``create_all``), so the
+    migration path is exercised everywhere. In production the app only *verifies* the schema;
+    migrations run as a separate, backed-up deployment step (``wwos db upgrade``)."""
+    from . import migrate, models  # noqa: F401  (register mappers)
+    from .config import get_settings
+
+    if get_settings().environment == "production":
+        migrate.ensure_current()
+    else:
+        migrate.upgrade()
 
 
 def _factory() -> sessionmaker[Session]:
@@ -147,6 +168,8 @@ def _guard_tenant_writes(session: Session, _ctx, _instances) -> None:
 def tenant_session(tenant_id: str) -> Iterator[Session]:
     if not tenant_id:
         raise TenantIsolationError("tenant_session requires a tenant id")
+    from . import budget_guard
+
     session = _factory()()
     session.info["tenant_id"] = tenant_id
     try:
@@ -154,9 +177,12 @@ def tenant_session(tenant_id: str) -> Iterator[Session]:
         session.commit()
     except Exception:
         session.rollback()
+        # Model spend incurred inside the rolled-back transaction is written to the ledger anyway.
+        budget_guard.after_rollback(session)
         raise
     finally:
         session.close()
+    budget_guard.after_commit(session)
 
 
 @contextmanager

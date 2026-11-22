@@ -67,27 +67,32 @@ def test_agent_budget_blocks_spend(tenant, scripted):
     # Output at the max_tokens cap: $2.00 per call on Opus 5.5 (+ tiny input).
     scripted(input_tokens=10, output_tokens=100_000)
     with tenant_session(tid) as s:
-        tenant_obj = s.get(Tenant, tid)
         qa = find_agent(s, role="qa")
         qa.monthly_budget_usd = Decimal("5")
+        qa_id = qa.id
+    with tenant_session(tid) as s:
+        tenant_obj = s.get(Tenant, tid)
+        qa = s.get(Agent, qa_id)
         trace = RunTrace()
         run_agent_prompt(s, tenant_obj, qa, "one", max_tokens=100_000, trace=trace)
         run_agent_prompt(s, tenant_obj, qa, "two", max_tokens=100_000, trace=trace)
+        # In-flight (not yet committed) spend counts: the third call is refused inside the same run.
         with pytest.raises(BudgetExceeded):
             run_agent_prompt(s, tenant_obj, qa, "three", max_tokens=100_000, trace=trace)
-        persist_spend(s, trace)
-        assert budget.spent_this_month(s, qa.id) == Decimal("4.00008")
+    with tenant_session(tid) as s:  # ledger written when the session ended
+        assert budget.spent_this_month(s, qa_id) == Decimal("4.00008")
+        with pytest.raises(BudgetExceeded):
+            run_agent_prompt(s, s.get(Tenant, tid), s.get(Agent, qa_id), "four", max_tokens=100_000)
 
 
 def test_org_budget_blocks_spend(tenant, scripted):
     tid, _ = tenant
     scripted(input_tokens=10, output_tokens=10)
     with tenant_session(tid) as s:
-        t = s.get(Tenant, tid)
         s.add(CostEntry(model="claude-opus-5-5", cost_usd=Decimal("499.99"), input_tokens=0, output_tokens=0))
-        s.flush()
+    with tenant_session(tid) as s:
         with pytest.raises(BudgetExceeded, match="organisation"):
-            run_agent_prompt(s, t, find_agent(s, role="sales"), "hi", max_tokens=2000)
+            run_agent_prompt(s, s.get(Tenant, tid), find_agent(s, role="sales"), "hi", max_tokens=2000)
 
 
 def test_privilege_containment_for_agent_created_agents(tenant):

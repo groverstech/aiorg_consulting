@@ -1,0 +1,290 @@
+"""Atomic budget reservations.
+
+Every model call is preceded by ``reserve`` and followed by ``incur`` (or ``release``).
+The check that admits a call is:
+
+    committed ledger spend this month
+  + every *active* reservation (reserved estimates and incurred-but-not-yet-committed actuals)
+  + this call's worst-case estimate
+  <= limit            (checked for the agent and for the organisation)
+
+and it is made atomically with recording the new reservation, so concurrent workers can
+never jointly exceed a limit.
+
+Stores:
+
+* ``SqlReservationStore`` (PostgreSQL, production): reservations live in their own committed
+  transactions on a separate connection, serialised per tenant by ``SELECT ... FOR UPDATE``
+  on ``budget_locks``. Visible to every worker on every host.
+* ``MemoryReservationStore`` (SQLite, development/tests): process-local, serialised by a lock.
+  SQLite deployments are single-process by design (production refuses SQLite).
+
+Ledger: spend is written to ``cost_entries`` only by ``spill``, in its own transaction, after the
+business transaction that made the call has committed *or* rolled back (``tenant_session`` hooks).
+``cost_entries.reservation_id`` is unique, so each reservation becomes spend exactly once, and no
+savepoint or rollback in business code can ever lose or duplicate spend. Until it is spilled, an
+incurred reservation counts as in-flight exposure. ``reconcile_expired`` covers crashed workers.
+"""
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from decimal import Decimal
+
+from sqlalchemy import func, insert, select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from . import db
+from .budget import BudgetExceeded, cost_of, month_start
+from .models import BudgetLock, BudgetReservation, CostEntry, Tenant, new_id, utcnow
+
+ACTIVE = ("reserved", "incurred")
+RESERVATION_TTL = timedelta(minutes=30)
+
+
+@dataclass
+class _Res:
+    id: str
+    tenant_id: str
+    agent_id: str
+    task_id: str | None
+    estimate: Decimal
+    actual: Decimal | None = None
+    model: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    status: str = "reserved"
+    expires_at: datetime = field(default_factory=lambda: utcnow() + RESERVATION_TTL)
+
+    @property
+    def exposure(self) -> Decimal:
+        return self.actual if self.actual is not None else self.estimate
+
+
+def _committed(conn, tenant_id: str, agent_id: str | None = None) -> Decimal:
+    q = select(func.coalesce(func.sum(CostEntry.cost_usd), 0)).where(
+        CostEntry.tenant_id == tenant_id, CostEntry.created_at >= month_start())
+    if agent_id:
+        q = q.where(CostEntry.agent_id == agent_id)
+    return Decimal(str(conn.execute(q).scalar_one()))
+
+
+def _admit(*, org_budget: Decimal, agent_budget: Decimal, agent_name: str, committed_org: Decimal,
+           committed_agent: Decimal, active_org: Decimal, active_agent: Decimal, estimate: Decimal) -> None:
+    if committed_agent + active_agent + estimate > agent_budget:
+        raise BudgetExceeded(
+            f"agent {agent_name} budget ${agent_budget} would be exceeded (spent ${committed_agent:.4f}, "
+            f"in flight ${active_agent:.4f}, call estimate ${estimate:.4f})")
+    if committed_org + active_org + estimate > org_budget:
+        raise BudgetExceeded(
+            f"organisation budget ${org_budget} would be exceeded (spent ${committed_org:.4f}, "
+            f"in flight ${active_org:.4f}, call estimate ${estimate:.4f})")
+
+
+def _write_ledger(tenant_id: str, rows: list[_Res]) -> None:
+    """Record incurred reservations in the ledger in an independent transaction (idempotent)."""
+    if not rows:
+        return
+    with db.write_transaction() as conn:
+        for r in rows:
+            exists = conn.execute(select(CostEntry.id).where(CostEntry.reservation_id == r.id)).first()
+            if exists:
+                continue
+            try:
+                with conn.begin_nested():
+                    conn.execute(insert(CostEntry).values(
+                        id=new_id(), tenant_id=tenant_id, agent_id=r.agent_id, task_id=r.task_id,
+                        reservation_id=r.id, model=r.model or "unknown", input_tokens=r.input_tokens,
+                        output_tokens=r.output_tokens, cost_usd=r.actual or Decimal("0"), created_at=utcnow()))
+            except IntegrityError:
+                pass  # a concurrent reconciler recorded it first: exactly once either way
+
+
+class MemoryReservationStore:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._res: dict[str, _Res] = {}
+
+    def reserve(self, *, tenant_id, agent_id, agent_name, agent_budget, task_id, estimate) -> str:
+        with self._lock:
+            now = utcnow()
+            active = [r for r in self._res.values() if r.tenant_id == tenant_id and r.status in ACTIVE
+                      and r.expires_at > now]
+            with db.engine().connect() as conn:  # committed data only (separate connection)
+                org_budget = Decimal(str(conn.execute(select(Tenant.monthly_budget_usd)
+                                                      .where(Tenant.id == tenant_id)).scalar_one()))
+                committed_org = _committed(conn, tenant_id)
+                committed_agent = _committed(conn, tenant_id, agent_id)
+            _admit(org_budget=org_budget, agent_budget=agent_budget, agent_name=agent_name,
+                   committed_org=committed_org, committed_agent=committed_agent,
+                   active_org=sum((r.exposure for r in active), Decimal("0")),
+                   active_agent=sum((r.exposure for r in active if r.agent_id == agent_id), Decimal("0")),
+                   estimate=estimate)
+            r = _Res(new_id(), tenant_id, agent_id, task_id, estimate)
+            self._res[r.id] = r
+            return r.id
+
+    def incur(self, rid, *, model, input_tokens, output_tokens) -> Decimal:
+        with self._lock:
+            r = self._res[rid]
+            r.model, r.input_tokens, r.output_tokens = model, input_tokens, output_tokens
+            r.actual = cost_of(model, input_tokens, output_tokens)
+            r.status = "incurred"
+            return r.actual
+
+    def release(self, rid) -> None:
+        with self._lock:
+            if rid in self._res and self._res[rid].status == "reserved":
+                self._res[rid].status = "released"
+
+    def settle(self, rids) -> None:
+        with self._lock:
+            for rid in rids:
+                if rid in self._res and self._res[rid].status in ACTIVE:
+                    self._res[rid].status = "settled" if self._res[rid].status == "incurred" else "released"
+            self._gc()
+
+    def spill(self, rids) -> None:
+        with self._lock:
+            rows = [self._res[r] for r in rids if r in self._res and self._res[r].status in ACTIVE]
+        by_tenant: dict[str, list[_Res]] = {}
+        for r in rows:
+            if r.status == "incurred":
+                by_tenant.setdefault(r.tenant_id, []).append(r)
+        for tid, items in by_tenant.items():
+            _write_ledger(tid, items)
+        self.settle([r.id for r in rows])
+
+    def reconcile_expired(self) -> int:
+        now = utcnow()
+        with self._lock:
+            expired = [r.id for r in self._res.values() if r.status in ACTIVE and r.expires_at <= now]
+        self.spill(expired)
+        return len(expired)
+
+    def _gc(self) -> None:
+        for rid in [k for k, v in self._res.items() if v.status in ("settled", "released")]:
+            del self._res[rid]
+
+    def active_count(self) -> int:
+        return sum(1 for r in self._res.values() if r.status in ACTIVE)
+
+
+class SqlReservationStore:
+    """Reservations as committed rows, serialised per tenant with a row lock (PostgreSQL)."""
+
+    def _lock_tenant(self, conn, tenant_id: str) -> None:
+        conn.execute(pg_insert(BudgetLock).values(id=new_id(), tenant_id=tenant_id)
+                     .on_conflict_do_nothing(index_elements=["tenant_id"]))
+        conn.execute(select(BudgetLock.id).where(BudgetLock.tenant_id == tenant_id).with_for_update())
+
+    def reserve(self, *, tenant_id, agent_id, agent_name, agent_budget, task_id, estimate) -> str:
+        now = utcnow()
+        with db.write_transaction() as conn:
+            self._lock_tenant(conn, tenant_id)
+            org_budget = Decimal(str(conn.execute(select(Tenant.monthly_budget_usd)
+                                                  .where(Tenant.id == tenant_id)).scalar_one()))
+            exposure = func.coalesce(BudgetReservation.actual_usd, BudgetReservation.estimate_usd)
+            base = select(func.coalesce(func.sum(exposure), 0)).where(
+                BudgetReservation.tenant_id == tenant_id, BudgetReservation.status.in_(ACTIVE),
+                BudgetReservation.expires_at > now)
+            active_org = Decimal(str(conn.execute(base).scalar_one()))
+            active_agent = Decimal(str(conn.execute(base.where(BudgetReservation.agent_id == agent_id)).scalar_one()))
+            _admit(org_budget=org_budget, agent_budget=agent_budget, agent_name=agent_name,
+                   committed_org=_committed(conn, tenant_id), committed_agent=_committed(conn, tenant_id, agent_id),
+                   active_org=active_org, active_agent=active_agent, estimate=estimate)
+            rid = new_id()
+            conn.execute(insert(BudgetReservation).values(
+                id=rid, tenant_id=tenant_id, agent_id=agent_id, task_id=task_id, estimate_usd=estimate,
+                status="reserved", created_at=now, expires_at=now + RESERVATION_TTL))
+            return rid
+
+    def incur(self, rid, *, model, input_tokens, output_tokens) -> Decimal:
+        actual = cost_of(model, input_tokens, output_tokens)
+        with db.write_transaction() as conn:
+            conn.execute(update(BudgetReservation).where(BudgetReservation.id == rid).values(
+                actual_usd=actual, model=model, input_tokens=input_tokens, output_tokens=output_tokens,
+                status="incurred"))
+        return actual
+
+    def release(self, rid) -> None:
+        with db.write_transaction() as conn:
+            conn.execute(update(BudgetReservation).where(BudgetReservation.id == rid,
+                                                         BudgetReservation.status == "reserved")
+                         .values(status="released"))
+
+    def settle(self, rids) -> None:
+        if not rids:
+            return
+        with db.write_transaction() as conn:
+            conn.execute(update(BudgetReservation).where(BudgetReservation.id.in_(rids),
+                                                         BudgetReservation.status == "incurred")
+                         .values(status="settled"))
+            conn.execute(update(BudgetReservation).where(BudgetReservation.id.in_(rids),
+                                                         BudgetReservation.status == "reserved")
+                         .values(status="released"))
+
+    def spill(self, rids) -> None:
+        if not rids:
+            return
+        t = BudgetReservation.__table__
+        with db.engine().connect() as conn:
+            rows = conn.execute(select(t).where(t.c.id.in_(rids), t.c.status == "incurred")).all()
+        by_tenant: dict[str, list[_Res]] = {}
+        for row in rows:
+            r = _Res(row.id, row.tenant_id, row.agent_id, row.task_id, row.estimate_usd, row.actual_usd,
+                     row.model, row.input_tokens, row.output_tokens, row.status)
+            by_tenant.setdefault(r.tenant_id, []).append(r)
+        for tid, items in by_tenant.items():
+            _write_ledger(tid, items)
+        self.settle(list(rids))
+
+    def reconcile_expired(self) -> int:
+        with db.engine().connect() as conn:
+            ids = [i for (i,) in conn.execute(select(BudgetReservation.id).where(
+                BudgetReservation.status.in_(ACTIVE), BudgetReservation.expires_at <= utcnow())).all()]
+        self.spill(ids)
+        return len(ids)
+
+    def active_count(self) -> int:
+        with db.engine().connect() as conn:
+            return conn.execute(select(func.count(BudgetReservation.id))
+                                .where(BudgetReservation.status.in_(ACTIVE))).scalar_one()
+
+
+_store = None
+_store_lock = threading.Lock()
+
+
+def store():
+    global _store
+    with _store_lock:
+        dialect = db.engine().dialect.name
+        if _store is None or getattr(_store, "_dialect", None) != (dialect, id(db.engine())):
+            _store = SqlReservationStore() if dialect == "postgresql" else MemoryReservationStore()
+            _store._dialect = (dialect, id(db.engine()))
+        return _store
+
+
+# Session integration: reservations made while a business session is open are settled after
+# it commits and spilled to the ledger after it rolls back (see db.tenant_session).
+SESSION_KEY = "wwos_reservations"
+
+
+def track(session, rid: str) -> None:
+    session.info.setdefault(SESSION_KEY, []).append(rid)
+
+
+def after_commit(session) -> None:
+    rids = session.info.pop(SESSION_KEY, [])
+    if rids:
+        store().spill(rids)
+
+
+def after_rollback(session) -> None:
+    rids = session.info.pop(SESSION_KEY, [])
+    if rids:
+        store().spill(rids)
+
