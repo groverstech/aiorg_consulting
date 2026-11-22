@@ -326,9 +326,19 @@ def _record_agent_failure(s: Session, agent_id: str, error: str) -> None:
                     )})
 
 
-def run_worker(poll_seconds: float = 2.0, max_tasks: int | None = None, stop_when_idle: bool = False) -> int:
+def run_worker(poll_seconds: float = 2.0, max_tasks: int | None = None, stop_when_idle: bool = False,
+               scheduled: bool = False) -> int:
+    from . import schedule
+
     done = 0
+    last_tick = 0.0
     while max_tasks is None or done < max_tasks:
+        if scheduled and time.monotonic() - last_tick >= 60:
+            try:
+                schedule.tick()
+            except Exception:  # noqa: BLE001 - scheduling must never stop task processing
+                log.exception("schedule tick failed")
+            last_tick = time.monotonic()
         claimed = claim_next()
         if claimed is None:
             if stop_when_idle:

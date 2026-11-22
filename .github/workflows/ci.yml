@@ -1,0 +1,29 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_DB: wwos, POSTGRES_USER: wwos, POSTGRES_PASSWORD: wwos }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U wwos" --health-interval 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[dev,postgres]"
+      - name: Unit and acceptance tests (SQLite)
+        run: pytest -q
+      - name: Smoke test against PostgreSQL
+        env:
+          WWOS_DATABASE_URL: postgresql+psycopg://wwos:wwos@localhost:5432/wwos
+        run: python scripts/smoke.py
+      - name: Independent QA scan
+        env:
+          WWOS_DATABASE_URL: postgresql+psycopg://wwos:wwos@localhost:5432/wwos
+        run: wwos qa

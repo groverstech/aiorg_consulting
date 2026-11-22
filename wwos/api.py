@@ -28,6 +28,7 @@ from .policy import PermissionDenied
 
 ROLE_RANK = {"viewer": 0, "operator": 1, "owner": 2}
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates" / "web"))
+templates.env.filters["money"] = lambda v: f"${Decimal(str(v or 0)):,.2f}"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -130,7 +131,9 @@ def health() -> dict:
         s.execute(text("SELECT 1"))
         queued = s.execute(select(func.count(Task.id)).where(Task.status == "queued")).scalar_one()
         dead = s.execute(select(func.count(Task.id)).where(Task.status == "dead")).scalar_one()
-    return {"status": "ok", "database": "ok", "queued_tasks": queued, "dead_tasks": dead}
+    from .schedule import last_qa
+
+    return {"status": "ok", "database": "ok", "queued_tasks": queued, "dead_tasks": dead, "last_qa_scan": last_qa()}
 
 
 # ---------------------------------------------------------------- CRM
@@ -390,6 +393,15 @@ def audit_log(limit: int = 200, s: Session = Depends(owner_session)) -> list[dic
 
 # ---------------------------------------------------------------- dashboard
 
+def _approval_preview(s: Session, r: ApprovalRequest) -> dict | None:
+    """What the owner needs to see to decide, e.g. the actual email for a send request."""
+    if r.action == "comms.send_email":
+        m = s.get(OutboundMessage, (r.params or {}).get("message_id"))
+        if m is not None:
+            return {"to": m.to_address, "subject": m.subject, "body": m.body}
+    return None
+
+
 def dashboard_data(s: Session) -> dict:
     tenant = lifecycle.tenant_of(s)
     depts = {d.id: d for d in s.scalars(select(Department))}
@@ -406,7 +418,7 @@ def dashboard_data(s: Session) -> dict:
         "allocated": budget.allocated_to_agents(s),
         "agents": agents,
         "pipeline": crm.pipeline_summary(s),
-        "approvals": approvals.pending(s),
+        "approvals": [{"r": r, "preview": _approval_preview(s, r)} for r in approvals.pending(s)],
         "tasks": list(s.scalars(select(Task).order_by(Task.updated_at.desc()).limit(15))),
         "task_counts": task_counts,
         "contacts": s.execute(select(func.count(Contact.id))).scalar_one(),

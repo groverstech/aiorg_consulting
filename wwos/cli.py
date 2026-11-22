@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     w = sub.add_parser("worker", help="run the background worker")
     w.add_argument("--once", action="store_true", help="drain due tasks and exit")
     w.add_argument("--poll", type=float, default=2.0)
+    w.add_argument("--no-schedule", action="store_true", help="do not run recurring jobs (daily reviews, QA scans)")
     srv = sub.add_parser("serve", help="run the API and dashboard")
     srv.add_argument("--host", default="127.0.0.1")
     srv.add_argument("--port", type=int, default=8000)
@@ -51,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
         from .workflows import drain, run_worker
 
         db.init_db()
-        n = drain() if args.once else run_worker(poll_seconds=args.poll)
+        n = drain() if args.once else run_worker(poll_seconds=args.poll, scheduled=not args.no_schedule)
         print(f"processed {n} task(s)")
     elif args.cmd == "serve":
         import uvicorn

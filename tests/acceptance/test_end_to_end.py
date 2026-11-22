@@ -177,7 +177,8 @@ def test_dashboard_login_and_approval_from_dashboard(client, tenant):
     assert r.status_code == 303 and "wwos_key" in r.cookies
     page = client.get("/dashboard")
     assert page.status_code == 200
-    for text in ["Owner approvals", "Agent workforce", "Pipeline", "CEO", "comms.send_email"]:
+    for text in ["Owner approvals", "Agent workforce", "Pipeline", "CEO", "comms.send_email",
+                 "jane@acme.com", "Your proposal from", "$500.00"]:
         assert text in page.text
     approval_id = client.get("/api/approvals", headers=H(key)).json()[0]["id"]
     r = client.post(f"/dashboard/approvals/{approval_id}", data={"decision": "approve"}, follow_redirects=False)
