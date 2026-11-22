@@ -1,27 +1,49 @@
 # White Waters AI Business Operating System
 
 A multi-tenant service in which Claude-powered agents, organised into nine departments, run the
-day-to-day operations of White Waters Consulting Group: lead intake, qualification, CRM,
-proposals, client correspondence, invoicing, reporting and their own workforce management.
-Hard limits set by the owner (budget, permissions, approvals) are enforced in code.
+day-to-day operations of White Waters Consulting Group. They handle lead intake and qualification,
+CRM, proposals, client correspondence, partner coordination, invoicing and reporting, and they manage
+their own workforce. Hard limits set by the owner are enforced in code: budgets, permissions,
+approvals and confidentiality.
 
-**What it does today**
-- Lead → qualification → proposal → outreach workflow, fully automated, with retries and idempotency.
-- CRM: contacts, companies, deals with a validated stage machine, and a complete activity history.
-- Documents: proposals, statements of work, invoices and status reports (HTML + Markdown).
-- Communications: transactional email outbox (SMTP-ready), sent exactly once.
-- Agent workforce: a CEO and Technology Director that create, test, version, suspend and repair
-  specialist agents themselves, within budget and without exceeding their own permissions.
-- Owner approval queue for money, signatures, filings, budget increases and (by policy) client email.
-- Budget enforcement per agent and per organisation, with an immutable cost ledger.
-- Management dashboard, REST API, background worker with a daily CEO review, and an hourly QA scan.
+**Status:** implemented, tested and CI-validated; **not deployed**. Live AI and real e-mail are
+off until the owner authorises them. See `docs/PROJECT_STATE.md`.
 
-**Start here**: `docs/RUNBOOK.md` (run and deploy), `docs/ARCHITECTURE.md` (how it works),
-`docs/PROJECT_STATE.md` (status, test results, owner actions).
+## What it does
+- **CEO autonomy.** Give the CEO an objective. It plans department tasks, creates missing specialist agents, delegates, gets QA review, retries or reassigns failed work, updates the CRM and writes an executive report.
+- **Agent workforce.** Agents are created, tested, versioned, suspended and repaired. Agent-created agents can never exceed their creator's permissions or budget.
+- **Budget.** Atomic per-call reservations against agent and organisation limits, recorded in an immutable ledger.
+- **Owner approval queue.** Payments, signatures, filings, budget increases, partner disclosures and (by policy) client e-mail all wait for the owner, who sees the exact content.
+- **Business data.** CRM with a validated deal pipeline; proposals, SOWs, invoices, status reports, anonymised partner briefs and executive reports.
+- **E-mail.** An outbox with at-most-once SMTP delivery and owner reconciliation of uncertain sends.
+- **Confidentiality.** Clients are isolated from each other, and partners only ever receive anonymised briefs.
 
+## Documentation
+| Document | Contents |
+|---|---|
+| `MASTER_IMPLEMENTATION_MANDATE.md` | Reconstructed business mandate (pending owner confirmation) |
+| `docs/PROJECT_STATE.md` | Status, results, owner actions |
+| `docs/ARCHITECTURE.md` | How it works |
+| `docs/SECURITY.md` | Controls, review findings, residual risks |
+| `docs/TEST_REPORT.md` | What was tested and the results |
+| `docs/DEPLOYMENT_GUIDE.md` | GCP deployment, cost estimate, permissions, rollback |
+| `docs/OPERATIONS_MANUAL.md` | Day-to-day operation, monitoring, recovery, incidents |
+| `docs/KNOWN_ISSUES.md` | Limitations and their resolution paths |
+| `docs/DECISION_LOG.md` | Architecture and policy decisions |
+
+## Quick start (local, no spend)
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+```
+```bash
 .venv/bin/wwos create-tenant "White Waters Consulting Group" --budget 500
-.venv/bin/wwos serve & .venv/bin/wwos worker
+```
+```bash
+.venv/bin/wwos serve
+```
+```bash
+.venv/bin/wwos worker
+```
+```bash
 .venv/bin/python -m pytest -q
 ```

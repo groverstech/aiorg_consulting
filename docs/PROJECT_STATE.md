@@ -1,66 +1,52 @@
 # Project state
 
-_Last updated: 2026-11-22. Update this file at the end of every working session._
+_Last updated: 2026-11-22. Branch `claude/peaceful-ride-6fjetj`. Update at the end of every session._
 
-## Status summary
-The operating system is implemented, tested and deployment-ready. It runs today with the
-offline model provider and the local email outbox. Going live with real Claude agents and
-real email needs the owner actions listed below; no code changes are required for that.
+## Status at a glance
 
-## Delivered milestones
-| # | Milestone | State |
-|---|---|---|
-| 1 | Multi-tenant data model with enforced isolation | Done, tested (SQLite + PostgreSQL) |
-| 2 | Nine departments, nine founding agents | Done |
-| 3 | Agent runtime: tool loop, permission, approval and budget gates | Done |
-| 4 | Agent lifecycle: provision, acceptance test, version, suspend, reactivate, replace | Done |
-| 5 | Dynamic agent creation by the CEO and Technology agents, with privilege containment | Done, tested end to end |
-| 6 | Budget enforcement and immutable cost ledger | Done |
-| 7 | CRM (contacts, companies, deals, stage machine, activity history) | Done |
-| 8 | Documents (proposal, SOW, invoice, status report; HTML + Markdown) | Done |
-| 9 | Communications: email outbox with at-most-once delivery, SMTP transport | Done (SMTP not yet configured) |
-| 10 | Durable task queue, retries, leases with claim tokens, dead-letter, self-healing | Done |
-| 11 | Lead → qualification → proposal → outreach workflow | Done |
-| 12 | Owner approval queue (API + dashboard) | Done |
-| 13 | Management dashboard and REST API with roles | Done, verified in a real browser (light, dark, mobile) |
-| 14 | Scheduler: daily CEO review, daily operations check, hourly QA scan | Done |
-| 15 | Independent QA: invariant scanner + acceptance suite + external review | Done |
-| 16 | Backup / restore (verified), Docker, Compose with PostgreSQL, CI | Done (container build not run here: no Docker daemon) |
+| Capability | Implemented | Tested | Validated (independent review / CI) | Deployed | Operational |
+|---|---|---|---|---|---|
+| Multi-tenant platform, auth, roles, dashboard | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Nine departments, nine founding agents | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Dynamic agent provisioning, versioning, repair | ✅ | ✅ | ✅ | ❌ | ❌ |
+| CEO objective orchestration (plan → QA → report) | ✅ | ✅ simulated model | ✅ mechanics | ❌ | ❌ |
+| Partner coordination with confidentiality | ✅ | ✅ | ✅ (residual risk: see SECURITY.md) | ❌ | ❌ |
+| CRM, lead workflow, documents | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Atomic budget enforcement | ✅ | ✅ incl. PostgreSQL concurrency | ✅ | ❌ | ❌ |
+| E-mail outbox, SMTP, reconciliation | ✅ | ✅ fake SMTP server | ✅ | ❌ | ❌ (no SMTP account) |
+| Live Claude agents | ✅ code | ✅ mock HTTP only | ❌ no live calls | ❌ | ❌ (no API key) |
+| Migrations, backups, recovery | ✅ | ✅ incl. previous-release DB | ✅ | ❌ | ❌ |
+| GCP infrastructure, CI/CD | ✅ Terraform + workflows | ✅ `terraform validate`, image build in CI | ✅ | ❌ not applied | ❌ |
 
-## Test results (latest run)
-- `pytest`: **88 passed** (unit, acceptance, provider and review-regression tests).
-- PostgreSQL 16: `scripts/smoke.py` OK, `wwos qa` 8/8, claim-token race verified (stale worker gets `lease_lost`, one deal).
-- Live server: lead submitted over HTTP, 4 workflow steps succeeded, dashboard rendered with 0 console errors.
-- Claude provider: request shape, refusal fallback, error classification verified against a mock HTTP transport. **No live API call has been made** (no credentials; it would spend owner funds).
+"Deployed" and "Operational" are ❌ because deployment, paid AI and real e-mail need owner authorisation.
 
-## Independent QA review
-A separate reviewer agent audited the code adversarially and proved its findings with scripts:
-1 critical, 3 high, 5 medium and 10 low defects. All were fixed, each with a regression test
-(`tests/unit/test_review_regressions.py`), and a second verification pass confirmed the fixes.
-That pass raised 2 further medium and 4 low items, now also fixed and tested. While fixing these,
-an additional SQLite transaction bug was found and fixed (ADR-014). See ADR-011 to ADR-015.
+## Latest results
+- Tests: **175 passed, 0 failed** (SQLite, PostgreSQL 16, headless Chromium). Details: `TEST_REPORT.md`.
+- CI run 4 on `0bf49bf`: **success**. That covers all tests with PostgreSQL and browser, `pip-audit`, `terraform validate`, and the image build with migrations run inside the image.
+- Independent security reviews: 4 rounds. All critical, high and medium findings are fixed with regression tests; residual risks are documented. Details: `SECURITY.md`.
 
-## Known limitations
-- Live Claude behaviour (prompt quality, tool-choice quality) is unverified until an API key is provided.
-- No payment, e-signature or regulator integrations: approved transfers, signatures and filings are
-  *authorised* records the owner carries out (ADR-009).
-- Budget pre-check can overshoot slightly with several concurrent workers (ADR-007).
-- An SMTP error raised after the server accepted a message can cause a resend (rare; see ADR-011).
-- Schema migrations (Alembic) are needed before the first post-launch schema change (ADR-016).
-- Login rate limiting is per process (in memory).
-- The master implementation mandate was not available; scope was derived from the amendment (ADR-001).
+## Hardening phase summary (2026-11-22)
+- Budget: atomic reservations with a per-tenant row lock, a ledger written exactly once, crash reconciliation, and limits that apply across agent versions.
+- E-mail: failures classified by SMTP phase, ambiguous outcomes never retried automatically, owner reconciliation, stable Message-IDs.
+- Migrations: Alembic baseline matching the previous release, adoption of older databases, backups before upgrades, destructive gates, drift check, production verification.
+- Partners: confidentiality controls, and owner approval with a content preview for every disclosure.
+- CEO objectives: autonomous orchestration, validated end to end with a simulated model.
+- Production: a production mode that refuses unsafe settings; GCP Terraform; CI/CD with deploy and rollback workflows; a cost estimate.
+- Reconstructed master mandate.
 
 ## Owner actions (the only blockers)
-| ID | Action | Why only the owner can do it | Unblocks |
-|---|---|---|---|
-| OA-1 | Share the original Master Implementation Mandate (add it to the repo as `docs/MASTER_MANDATE.md`) | Not found in the repo, Drive or Gmail | Reconciling scope against the original plan |
-| OA-2 | Provide an Anthropic API key and confirm the monthly AI budget (default $500) | New expenditure + credential | Live agents (`WWOS_LLM_PROVIDER=anthropic`) |
-| OA-3 | Choose hosting and authorise its cost (any container host + managed PostgreSQL) | New cloud expenditure | Production deployment |
-| OA-4 | Provide SMTP credentials and a sending address on the firm's domain | Credential / external account | Real client email |
-| OA-5 | Decide whether agents may email clients without per-message approval (`WWOS_EXTERNAL_EMAIL_REQUIRES_APPROVAL`) | Business policy (§9) | Fully unattended outreach |
 
-## Next steps for the following session
-1. On OA-2: run the acceptance suite's scenarios against the live model with a $5 cap, tune agent instructions, choose models per agent by cost.
-2. On OA-3: deploy with `deploy/docker-compose.yml`, run `create-tenant`, verify `/health`, `wwos qa`, a backup and a restore.
-3. Add Alembic baseline before any schema change.
-4. Extend workflows: won deal → SOW → invoice, and a weekly status-report cycle for active engagements.
+| ID | Action | Why only the owner | Unblocks |
+|---|---|---|---|
+| OA-1 | Confirm `MASTER_IMPLEMENTATION_MANDATE.md` (or supply the original) and the open items in its §9 | Business facts and policy | Scope certainty |
+| OA-2 | Authorise AI spend (default cap $500/month) and add the Anthropic API key to Secret Manager | New expenditure + credential | Live agents |
+| OA-3 | Create/choose a GCP project with billing; authorise about $97/month (see `DEPLOYMENT_GUIDE.md` §2); grant the permissions in §3; run `terraform apply` | Cloud expenditure + account permissions | Deployment |
+| OA-4 | Provide an SMTP account on the firm's domain | Credential | Real e-mail |
+| OA-5 | Decide whether agents may e-mail clients without per-message approval | Business policy | Unattended outreach |
+| OA-6 | Register real partners and attest NDAs only where signed | Legal fact | Partner work |
+| OA-7 | GitHub: `production` environment with required reviewers; Workload Identity Federation variables | Repository/cloud admin | Deploy workflow |
+
+## Next steps (after owner actions)
+1. Run the scenario suite against the live model with a small cap; tune instructions; set per-agent models by cost.
+2. Deploy with the deploy workflow; verify `/health`, `/health/details`, `wwos qa`; run a restore drill.
+3. Pin GitHub Actions to commit SHAs before granting deploy credentials.

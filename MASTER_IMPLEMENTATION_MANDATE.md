@@ -61,7 +61,7 @@ data raises legal obligations that need owner decisions. Owner to specify.
    coordinate departments; have results reviewed by QA; retry or reassign failed work; update CRM
    and activity records; produce an executive report — without human intervention. [H §6]
 3. Agents created by agents inherit at most their creator's permissions and budget headroom, and
-   only the owner can create agents that themselves create agents. [D: ADR-012, ADR-015]
+   only the owner can create agents that themselves create agents. [D: ADR-015, ADR-026; enforced in wwos/agents/lifecycle.py]
 4. Every new agent or agent version must pass an automated acceptance test before it can act. [A §4], [D: ADR-010]
 
 ## 4. Owner authority (human intervention policy)
