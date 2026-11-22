@@ -83,23 +83,27 @@ def _admit(*, org_budget: Decimal, agent_budget: Decimal, agent_name: str, commi
             f"in flight ${active_org:.4f}, call estimate ${estimate:.4f})")
 
 
-def _write_ledger(tenant_id: str, rows: list[_Res]) -> None:
-    """Record incurred reservations in the ledger in an independent transaction (idempotent)."""
+def _write_ledger(tenant_id: str, rows: list[_Res], conn=None) -> None:
+    """Record incurred reservations in the ledger (idempotent). With ``conn`` the inserts join the
+    caller's transaction, so the ledger rows and the reservation status change commit together."""
     if not rows:
         return
-    with db.write_transaction() as conn:
-        for r in rows:
-            exists = conn.execute(select(CostEntry.id).where(CostEntry.reservation_id == r.id)).first()
-            if exists:
-                continue
-            try:
-                with conn.begin_nested():
-                    conn.execute(insert(CostEntry).values(
-                        id=new_id(), tenant_id=tenant_id, agent_id=r.agent_id, task_id=r.task_id,
-                        reservation_id=r.id, model=r.model or "unknown", input_tokens=r.input_tokens,
-                        output_tokens=r.output_tokens, cost_usd=r.actual or Decimal("0"), created_at=utcnow()))
-            except IntegrityError:
-                pass  # a concurrent reconciler recorded it first: exactly once either way
+    if conn is None:
+        with db.write_transaction() as own:
+            _write_ledger(tenant_id, rows, own)
+        return
+    for r in rows:
+        exists = conn.execute(select(CostEntry.id).where(CostEntry.reservation_id == r.id)).first()
+        if exists:
+            continue
+        try:
+            with conn.begin_nested():
+                conn.execute(insert(CostEntry).values(
+                    id=new_id(), tenant_id=tenant_id, agent_id=r.agent_id, task_id=r.task_id,
+                    reservation_id=r.id, model=r.model or "unknown", input_tokens=r.input_tokens,
+                    output_tokens=r.output_tokens, cost_usd=r.actual or Decimal("0"), created_at=utcnow()))
+        except IntegrityError:
+            pass  # a concurrent reconciler recorded it first: exactly once either way
 
 
 class MemoryReservationStore:
@@ -151,15 +155,19 @@ class MemoryReservationStore:
             self._gc()
 
     def spill(self, rids) -> None:
+        # The lock is held across the ledger write AND the settle, so no concurrent reserve() can see
+        # the spend twice (ledger + still-active reservation) and wrongly refuse a call.
         with self._lock:
             rows = [self._res[r] for r in rids if r in self._res and self._res[r].status in ACTIVE]
-        by_tenant: dict[str, list[_Res]] = {}
-        for r in rows:
-            if r.status == "incurred":
-                by_tenant.setdefault(r.tenant_id, []).append(r)
-        for tid, items in by_tenant.items():
-            _write_ledger(tid, items)
-        self.settle([r.id for r in rows])
+            by_tenant: dict[str, list[_Res]] = {}
+            for r in rows:
+                if r.status == "incurred":
+                    by_tenant.setdefault(r.tenant_id, []).append(r)
+            for tid, items in by_tenant.items():
+                _write_ledger(tid, items)
+            for r in rows:
+                r.status = "settled" if r.status == "incurred" else "released"
+            self._gc()
 
     def reconcile_expired(self) -> int:
         now = utcnow()
@@ -236,16 +244,24 @@ class SqlReservationStore:
         if not rids:
             return
         t = BudgetReservation.__table__
-        with db.engine().connect() as conn:
-            rows = conn.execute(select(t).where(t.c.id.in_(rids), t.c.status == "incurred")).all()
-        by_tenant: dict[str, list[_Res]] = {}
-        for row in rows:
-            r = _Res(row.id, row.tenant_id, row.agent_id, row.task_id, row.estimate_usd, row.actual_usd,
-                     row.model, row.input_tokens, row.output_tokens, row.status)
-            by_tenant.setdefault(r.tenant_id, []).append(r)
-        for tid, items in by_tenant.items():
-            _write_ledger(tid, items)
-        self.settle(list(rids))
+        # One transaction: ledger rows + reservation status change commit atomically, so a concurrent
+        # reserve() sees either the active reservation or the ledger entry, never both or neither.
+        with db.write_transaction() as conn:
+            rows = conn.execute(select(t).where(t.c.id.in_(rids), t.c.status == "incurred")
+                                .with_for_update()).all()
+            by_tenant: dict[str, list[_Res]] = {}
+            for row in rows:
+                r = _Res(row.id, row.tenant_id, row.agent_id, row.task_id, row.estimate_usd, row.actual_usd,
+                         row.model, row.input_tokens, row.output_tokens, row.status)
+                by_tenant.setdefault(r.tenant_id, []).append(r)
+            for tid, items in by_tenant.items():
+                _write_ledger(tid, items, conn)
+            conn.execute(update(BudgetReservation).where(BudgetReservation.id.in_(rids),
+                                                         BudgetReservation.status == "incurred")
+                         .values(status="settled"))
+            conn.execute(update(BudgetReservation).where(BudgetReservation.id.in_(rids),
+                                                         BudgetReservation.status == "reserved")
+                         .values(status="released"))
 
     def reconcile_expired(self) -> int:
         with db.engine().connect() as conn:

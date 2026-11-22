@@ -78,6 +78,8 @@ def _is_destructive(rev_id: str) -> bool:
 
 def drift(eng: Engine | None = None) -> list:
     """Differences between the live schema and the ORM models (empty list = in sync)."""
+    from . import models  # noqa: F401  (populate the metadata; CLI paths may not have imported it)
+
     eng = eng or db.engine()
     with eng.connect() as conn:
         ctx = MigrationContext.configure(conn, opts={"compare_type": True})
