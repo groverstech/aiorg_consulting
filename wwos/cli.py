@@ -34,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--once", action="store_true", help="drain due tasks and exit")
     w.add_argument("--poll", type=float, default=2.0)
     w.add_argument("--no-schedule", action="store_true", help="do not run recurring jobs (daily reviews, QA scans)")
+    w.add_argument("--health-port", type=int, default=0,
+                   help="serve GET /healthz on this port (Cloud Run requires a listening port)")
     srv = sub.add_parser("serve", help="run the API and dashboard")
     srv.add_argument("--host", default="127.0.0.1")
     srv.add_argument("--port", type=int, default=8000)
@@ -45,7 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--yes", action="store_true", help="confirm the overwrite")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    from .logging_setup import configure as configure_logging
+
+    configure_logging()
     from . import db
 
     if args.cmd == "init-db":
@@ -94,6 +98,10 @@ def main(argv: list[str] | None = None) -> int:
 
         assert_safe_for_environment()
         db.init_db()
+        if args.health_port:
+            from .workflows import start_health_server
+
+            start_health_server(args.health_port)
         n = drain() if args.once else run_worker(poll_seconds=args.poll, scheduled=not args.no_schedule)
         print(f"processed {n} task(s)")
     elif args.cmd == "serve":

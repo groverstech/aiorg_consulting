@@ -1,0 +1,51 @@
+# Manual, owner-approved deployment to Google Cloud. Never runs on push.
+# Prerequisites (owner): GCP project with billing, `terraform apply` of deploy/gcp, a Workload Identity
+# Federation provider for this repository, and a GitHub environment "production" with required reviewers.
+name: deploy
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to deploy (tag or commit SHA that passed CI)
+        required: true
+permissions:
+  contents: read
+  id-token: write
+concurrency: { group: production-deploy, cancel-in-progress: false }
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/wwos/wwos
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ inputs.ref }}" }
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Build and push image
+        run: |
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          docker build -t "$IMAGE:${{ github.sha }}" .
+          docker push "$IMAGE:${{ github.sha }}"
+      - name: On-demand database backup (before any migration)
+        run: gcloud sql backups create --instance=wwos-pg --description="pre-deploy ${{ github.sha }}" --project "$PROJECT"
+      - name: Run migrations (Cloud Run job)
+        run: |
+          gcloud run jobs update wwos-migrate --image "$IMAGE:${{ github.sha }}" --region "$REGION" --project "$PROJECT"
+          gcloud run jobs execute wwos-migrate --wait --region "$REGION" --project "$PROJECT"
+      - name: Deploy new revisions without traffic
+        run: |
+          gcloud run deploy wwos-api --image "$IMAGE:${{ github.sha }}" --region "$REGION" --project "$PROJECT" --no-traffic --tag candidate
+          gcloud run deploy wwos-worker --image "$IMAGE:${{ github.sha }}" --region "$REGION" --project "$PROJECT"
+      - name: Health check the candidate, then shift traffic
+        run: |
+          URL=$(gcloud run services describe wwos-api --region "$REGION" --project "$PROJECT" --format='value(status.traffic[0].url)' | sed 's#https://#https://candidate---#')
+          curl -fsS "$URL/health"
+          gcloud run services update-traffic wwos-api --to-latest --region "$REGION" --project "$PROJECT"

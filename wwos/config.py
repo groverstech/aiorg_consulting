@@ -14,6 +14,23 @@ def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+def _database_url() -> str:
+    """WWOS_DATABASE_URL wins. On Cloud Run the URL is assembled from the Cloud SQL unix socket and the
+    password secret, so the password never appears in configuration or Terraform state."""
+    explicit = os.environ.get("WWOS_DATABASE_URL")
+    if explicit:
+        return explicit
+    socket_dir = os.environ.get("WWOS_DATABASE_HOST_SOCKET")
+    if socket_dir:
+        from urllib.parse import quote_plus
+
+        user = os.environ.get("WWOS_DB_USER", "wwos")
+        name = os.environ.get("WWOS_DB_NAME", "wwos")
+        password = quote_plus(os.environ.get("WWOS_DB_PASSWORD", ""))
+        return f"postgresql+psycopg://{user}:{password}@/{name}?host={quote_plus(socket_dir)}"
+    return "sqlite:///./var/wwos.db"
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -25,7 +42,7 @@ def _env_bool(name: str, default: bool) -> bool:
 class Settings:
     # "development" (default) or "production". Production refuses unsafe configuration.
     environment: str = field(default_factory=lambda: _env("WWOS_ENV", "development"))
-    database_url: str = field(default_factory=lambda: _env("WWOS_DATABASE_URL", "sqlite:///./var/wwos.db"))
+    database_url: str = field(default_factory=_database_url)
     # "offline" uses a deterministic local provider (no network, no spend).
     # "anthropic" calls the Claude API; credentials resolve from the environment.
     llm_provider: str = field(default_factory=lambda: _env("WWOS_LLM_PROVIDER", "offline"))

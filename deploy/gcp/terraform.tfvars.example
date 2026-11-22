@@ -1,0 +1,9 @@
+project_id    = "your-gcp-project-id"
+region        = "us-central1"
+image_tag     = "REPLACE_WITH_GIT_SHA"
+public_origin = "https://ops.your-domain.example"
+alert_email   = "owner@your-domain.example"
+# llm_provider = "anthropic"   # only after the owner authorises AI spend and adds the API key secret
+# smtp_host    = "smtp.your-provider.example"
+# smtp_from    = "operations@your-domain.example"
+# smtp_user    = "operations@your-domain.example"

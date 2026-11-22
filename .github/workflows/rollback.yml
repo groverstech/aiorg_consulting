@@ -1,0 +1,28 @@
+# Manual rollback: send all API traffic to a previous revision and pin the worker to its image.
+# Schema rollbacks are separate and destructive: see docs/OPERATIONS_MANUAL.md (restore from backup).
+name: rollback
+on:
+  workflow_dispatch:
+    inputs:
+      api_revision:
+        description: Cloud Run revision name of wwos-api to restore (e.g. wwos-api-00012-abc)
+        required: true
+      image_tag:
+        description: Image tag (git SHA) the worker should run
+        required: true
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: |
+          gcloud run services update-traffic wwos-api --to-revisions "${{ inputs.api_revision }}=100" --region "${{ vars.GCP_REGION }}" --project "${{ vars.GCP_PROJECT_ID }}"
+          gcloud run deploy wwos-worker --image "${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/wwos/wwos:${{ inputs.image_tag }}" --region "${{ vars.GCP_REGION }}" --project "${{ vars.GCP_PROJECT_ID }}"

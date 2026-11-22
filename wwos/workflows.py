@@ -338,6 +338,7 @@ def process(task_id: str, tenant_id: str, token: str) -> str:
             status, extra = "dead", {}
         _finish(s, task_id, token, status=status, last_error=last_error, **extra)
         audit(s, "worker", "task.failed", task_id, kind=task.kind, error=last_error, final=status)
+        log.warning("task.failed %s kind=%s final=%s error=%s", task_id, task.kind, status, last_error[:300])
         if task.agent_id:
             _record_agent_failure(s, task.agent_id, last_error)
         return status
@@ -374,6 +375,30 @@ def _record_agent_failure(s: Session, agent_id: str, error: str) -> None:
                     )})
 
 
+_heartbeat = {"at": 0.0}
+HEARTBEAT_STALE_SECONDS = 600
+
+
+def start_health_server(port: int) -> None:
+    """Tiny liveness endpoint for the worker: 200 while the loop is turning, 503 if it has stalled."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            fresh = time.monotonic() - _heartbeat["at"] < HEARTBEAT_STALE_SECONDS or _heartbeat["at"] == 0.0
+            ok = self.path == "/healthz" and fresh
+            self.send_response(200 if ok else 503)
+            self.end_headers()
+            self.wfile.write(b"ok" if ok else b"stalled")
+
+        def log_message(self, *args):  # keep request logs out of the application log
+            pass
+
+    srv = ThreadingHTTPServer(("0.0.0.0", port), H)  # noqa: S104 - Cloud Run container port
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+
 def run_worker(poll_seconds: float = 2.0, max_tasks: int | None = None, stop_when_idle: bool = False,
                scheduled: bool = False, tenant_id: str | None = None) -> int:
     from . import comms, schedule
@@ -382,6 +407,7 @@ def run_worker(poll_seconds: float = 2.0, max_tasks: int | None = None, stop_whe
     last_tick = 0.0
     last_reconcile = 0.0
     while max_tasks is None or done < max_tasks:
+        _heartbeat["at"] = time.monotonic()
         if scheduled and time.monotonic() - last_tick >= 60:
             try:
                 schedule.tick()
@@ -405,7 +431,7 @@ def run_worker(poll_seconds: float = 2.0, max_tasks: int | None = None, stop_whe
             time.sleep(poll_seconds)
             continue
         status = process(*claimed)
-        log.info("task %s -> %s", claimed[0], status)
+        (log.error if status == "dead" else log.info)("task %s -> %s", claimed[0], status)
         done += 1
     return done
 

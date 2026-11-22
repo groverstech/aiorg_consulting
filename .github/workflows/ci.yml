@@ -2,6 +2,8 @@ name: ci
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -12,18 +14,46 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U wwos" --health-interval 5s --health-retries 10
+    env:
+      WWOS_TEST_PG_URL: postgresql+psycopg://wwos:wwos@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -e ".[dev,postgres]"
-      - name: Unit and acceptance tests (SQLite)
-        run: pytest -q
-      - name: Smoke test against PostgreSQL
-        env:
-          WWOS_DATABASE_URL: postgresql+psycopg://wwos:wwos@localhost:5432/wwos
+      - run: pip install -e ".[dev,postgres]" playwright
+      - run: python -m playwright install --with-deps chromium
+      - name: All tests (unit, acceptance, PostgreSQL, browser)
+        run: pytest -q -rs
+      - name: Migrations reach head without drift (PostgreSQL)
+        env: { WWOS_DATABASE_URL: "postgresql+psycopg://wwos:wwos@localhost:5432/wwos" }
+        run: |
+          wwos db upgrade --backup-confirmed
+          wwos db check
+      - name: End-to-end smoke (PostgreSQL)
+        env: { WWOS_DATABASE_URL: "postgresql+psycopg://wwos:wwos@localhost:5432/wwos" }
         run: python scripts/smoke.py
-      - name: Independent QA scan
-        env:
-          WWOS_DATABASE_URL: postgresql+psycopg://wwos:wwos@localhost:5432/wwos
+      - name: Independent QA invariant scan
+        env: { WWOS_DATABASE_URL: "postgresql+psycopg://wwos:wwos@localhost:5432/wwos" }
         run: wwos qa
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[postgres]" pip-audit
+      - name: Dependency vulnerability audit
+        run: pip-audit --skip-editable
+
+  infrastructure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.9.8" }
+      - run: terraform -chdir=deploy/gcp fmt -check -diff
+      - run: terraform -chdir=deploy/gcp init -backend=false
+      - run: terraform -chdir=deploy/gcp validate
+      - name: Container image builds
+        run: docker build -t wwos:ci .

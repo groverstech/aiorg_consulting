@@ -12,6 +12,7 @@ therefore never send the same email twice. Delivery uses a pluggable transport:
 """
 from __future__ import annotations
 
+import logging
 import re
 import smtplib
 from datetime import timedelta
@@ -272,6 +273,7 @@ def dispatch(limit: int = 50, tenant_id: str | None = None) -> int:
                 msg = s.get(OutboundMessage, mid)
                 msg.last_error = f"delivery outcome unknown: {type(e).__name__}: {e}"[:2000]
                 msg.status = "unknown"  # never auto-retried (ADR-011); see resolve()
+            logging.getLogger("wwos.comms").error("message %s: delivery outcome unknown: %s", mid, e)
             continue
         with tenant_session(owner, immediate=True) as s:
             msg = s.get(OutboundMessage, mid)
