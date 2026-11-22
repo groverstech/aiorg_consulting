@@ -128,7 +128,7 @@ attestation. Every message to a partner domain (sub-domains included) is owner-a
 re-verifies provenance, NDA and leaks. Partner coordination is done by specialists the CEO
 provisions (no founding partner agent), keeping the nine departments the owner specified.
 
-### ADR-022: Claude Agent SDK not used (owner-visible deviation)
+### ADR-022: Claude Agent SDK not used (superseded by ADR-027)
 The hardening mandate lists the Claude Agent SDK. Its value is a coding/filesystem harness with
 built-in shell and file tools; business agents here must have *only* tools that pass this system's
 permission, owner-approval and budget gates, act on a tenant-scoped database, and be testable
@@ -156,3 +156,26 @@ alerts. Chosen for lowest operating effort at small scale. Terraform describes; 
 Document kinds `partner_brief` and `executive_report` can only be produced by their owning workflow,
 and the nine founding role names can only be used by the owner, so agents can neither forge
 confidential artefacts nor hijack role-based routing (security review round 3).
+
+### ADR-027: Claude Agent SDK integrated as a secured, selectable runtime; Messages API stays default
+Full evaluation: `docs/AGENT_SDK_EVALUATION.md`. The Agent SDK runs with no built-in tools, only the
+agent's WWOS tools (each routed through `execute_tool`), a fail-closed hook, `dontAsk`, no settings,
+memory or history, an allowlisted environment (the CLI was observed injecting inherited account
+variables into prompts), a parent-death signal, and a per-call budget proxy at `ANTHROPIC_BASE_URL`
+that also keeps the real API key out of the CLI. All safeguards are preserved and tested offline
+against the real CLI, including the full CEO scenario. Production default stays `messages` (smaller
+attack surface, native per-call budget control, ~4× less memory per run); switching is an owner
+decision (OA-8) best taken after a live-model trial.
+
+### ADR-028: Partner acquisition separated from partner confirmation
+Indian CA/CS firms and international providers are acquired through a pipeline agents can advance
+(identified → contacted → in discussion → NDA requested, or declined). A partner is *confirmed* only
+by the owner, with an NDA on file and a partnership agreement; credentials (category as stated by the
+firm) are unverified until the owner attests them. Introductions to prospects are allowed but always
+owner-approved (`partner_outreach`); work briefs go only to confirmed partners (`confidential_disclosure`).
+Supersedes the part of ADR-021 where an NDA attestation activated a partner.
+
+### ADR-029: Cloud spend guard-rails
+Terraform optionally creates a GCP billing budget with e-mail alerts at 50 %, 90 % and 100 %
+(and forecast 100 %), alongside the existing hard limits: one worker instance, API max 3 instances,
+fixed database tier. AI spend is capped separately by the atomic budget guard.

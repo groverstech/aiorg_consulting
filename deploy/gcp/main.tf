@@ -230,7 +230,7 @@ resource "google_cloud_run_v2_service" "worker" {
       image   = local.image
       command = ["wwos", "worker", "--health-port", "8080"]
       resources {
-        limits   = { cpu = "1", memory = "512Mi" }
+        limits   = { cpu = "1", memory = var.worker_memory }
         cpu_idle = false # instance-based billing: the worker runs continuously
       }
       dynamic "env" {
@@ -387,6 +387,33 @@ resource "google_monitoring_alert_policy" "log_alerts" {
     }
   }
   notification_channels = [google_monitoring_notification_channel.owner.id]
+}
+
+# Optional monthly billing budget with e-mail alerts (needs Billing Account permissions; ADR-029).
+resource "google_billing_budget" "monthly" {
+  count           = var.billing_account_id == "" ? 0 : 1
+  billing_account = var.billing_account_id
+  display_name    = "wwos monthly cloud budget"
+  budget_filter {
+    projects = ["projects/${var.project_id}"]
+  }
+  amount {
+    specified_amount {
+      currency_code = "USD"
+      units         = var.monthly_cloud_budget_usd
+    }
+  }
+  threshold_rules { threshold_percent = 0.5 }
+  threshold_rules { threshold_percent = 0.9 }
+  threshold_rules { threshold_percent = 1.0 }
+  threshold_rules {
+    threshold_percent = 1.0
+    spend_basis       = "FORECASTED_SPEND"
+  }
+  all_updates_rule {
+    monitoring_notification_channels = [google_monitoring_notification_channel.owner.id]
+    disable_default_iam_recipients   = false
+  }
 }
 
 output "api_url" { value = google_cloud_run_v2_service.api.uri }

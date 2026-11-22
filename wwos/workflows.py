@@ -448,6 +448,42 @@ def drain(max_tasks: int = 500, tenant_id: str | None = None) -> int:
     return n
 
 
+@handler("workflow.delivery_kickoff")
+def _wf_delivery_kickoff(s: Session, tenant: Tenant, task: Task, trace: RunTrace) -> dict:
+    """Won deal -> draft SOW from the accepted proposal, owner signature request, delivery planning task.
+    Dates, milestones and payment terms are left "to be agreed": they are commercial terms only the
+    owner can set, so nothing is invented and no invoice is raised automatically."""
+    from .models import Company, Document
+
+    deal = s.get(Deal, task.payload["deal_id"])
+    proposal = s.scalars(select(Document).where(Document.deal_id == deal.id, Document.kind == "proposal")
+                         .order_by(Document.created_at.desc())).first()
+    scope = (proposal.data or {}).get("scope_items") if proposal else None
+    company = s.get(Company, deal.company_id) if deal.company_id else None
+    contact = s.get(Contact, deal.contact_id)
+    client = company.name if company else f"{contact.first_name} {contact.last_name}".strip()
+    sow = documents.generate(s, kind="sow", title=f"Statement of Work - {client}", deal_id=deal.id, actor="workflow",
+                             data={"client_name": client, "deliverables": scope or [deal.title],
+                                   "milestones": [{"name": "Kick-off and milestone plan", "date": "to be agreed"}],
+                                   "fee": str(deal.value), "currency": deal.currency, "start_date": "to be agreed"})
+    crm.log_activity(s, kind="document", summary=f"Draft SOW {sow.id} prepared for owner signature",
+                     deal_id=deal.id, contact_id=deal.contact_id, actor="workflow")
+    legal = find_agent(s, role="legal")
+    approval = None
+    if legal is not None:
+        out, err = execute_tool(ToolContext(session=s, tenant=tenant, agent=legal, task_id=task.id),
+                                "legal.sign_agreement", {"document_id": sow.id, "counterparty": client}, trace)
+        approval = None if err else out.get("approval_id")
+    delivery = find_agent(s, role="delivery")
+    if delivery is not None:
+        enqueue(s, kind="agent_run", agent_id=delivery.id, idempotency_key=f"deal:{deal.id}:delivery-plan",
+                payload={"instruction": (
+                    f"Deal {deal.id} ({deal.title}) has been won. Draft SOW {sow.id} awaits the owner's signature. "
+                    "Prepare a milestone plan proposal and log it against the deal with crm.log_activity. "
+                    "Do not commit to dates or fees; those are confirmed by the owner.")})
+    return {"sow_document_id": sow.id, "signature_approval_id": approval}
+
+
 # Objective orchestration steps (wwos/objectives.py)
 from . import objectives as _objectives  # noqa: E402
 

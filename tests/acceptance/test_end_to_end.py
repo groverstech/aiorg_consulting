@@ -224,3 +224,31 @@ def test_qa_detects_injected_violations(tenant):
     failed = {c.name for c in report.checks if not c.passed}
     assert "Agent permissions: privilege containment holds" in failed
     assert "Budget: no tenant or agent over its ceiling" in failed
+
+
+def test_won_deal_hands_off_to_delivery_without_inventing_terms(client, tenant):
+    from sqlalchemy import select
+
+    from wwos import workflows
+    from wwos.db import tenant_session
+    from wwos.models import ApprovalRequest, Document, Task
+
+    tid, key = tenant
+    client.post("/api/leads", json=LEAD, headers=H(key))
+    client.post("/api/worker/drain", headers=H(key))
+    deal_id = client.get("/api/deals", headers=H(key)).json()[0]["id"]
+    for stage in ["negotiation", "won"]:
+        client.post(f"/api/deals/{deal_id}/stage", json={"stage": stage}, headers=H(key))
+    client.post("/api/worker/drain", headers=H(key))
+    with tenant_session(tid) as s:
+        sow = s.scalars(select(Document).where(Document.kind == "sow")).one()
+        assert "Acme Ltd" in sow.markdown and "to be agreed" in sow.markdown and "25,000.00" in sow.markdown
+        sign = s.scalars(select(ApprovalRequest).where(ApprovalRequest.action == "legal.sign_agreement")).one()
+        assert sign.category == "legal_commitment" and sign.status == "pending"
+        plan = s.scalars(select(Task).where(Task.idempotency_key == f"deal:{deal_id}:delivery-plan")).one()
+        assert plan.status == "succeeded"
+        assert not s.scalars(select(Document).where(Document.kind == "invoice")).all()  # no invented billing
+    # Moving the deal again never repeats the hand-off.
+    workflows.drain()
+    with tenant_session(tid) as s:
+        assert len(s.scalars(select(Document).where(Document.kind == "sow")).all()) == 1

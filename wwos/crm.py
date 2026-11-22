@@ -120,6 +120,11 @@ def move_deal(s: Session, deal_id: str, stage: str, actor: str = "system") -> De
             contact.lifecycle = "customer"
     log_activity(s, kind="stage_change", summary=f"Stage {previous} -> {stage}", contact_id=deal.contact_id,
                  deal_id=deal.id, actor=actor)
+    if stage == "won":
+        from .workflows import enqueue  # delivery hand-off, exactly once per deal
+
+        enqueue(s, kind="workflow.delivery_kickoff", idempotency_key=f"deal:{deal.id}:delivery-kickoff",
+                payload={"deal_id": deal.id})
     return deal
 
 

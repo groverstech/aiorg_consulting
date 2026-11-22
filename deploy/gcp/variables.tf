@@ -49,3 +49,17 @@ variable "api_min_instances" {
   type    = number
   default = 0
 }
+variable "worker_memory" {
+  type        = string
+  default     = "512Mi"
+  description = "1Gi when WWOS_AGENT_RUNTIME=agent_sdk (each concurrent Agent SDK run uses ~217 MiB)"
+}
+variable "billing_account_id" {
+  type        = string
+  default     = ""
+  description = "Billing account for the optional budget alert (empty = no budget resource)"
+}
+variable "monthly_cloud_budget_usd" {
+  type    = string
+  default = "120"
+}
