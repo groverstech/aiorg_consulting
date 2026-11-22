@@ -109,3 +109,49 @@ def test_partner_subdomains_are_recognised(setup):
     with tenant_session(tid) as s:
         assert partners.partner_for_address(s, "ops@mail.mumbaipartners.in").id == pid
         assert partners.partner_for_address(s, "x@notmumbaipartners.in") is None
+
+
+# ---- Re-verification round (N1-N4)
+@pytest.mark.parametrize("scope", [
+    "Client is Acme.",                      # short distinctive name
+    "Асmе Holdings needs help.",            # Cyrillic homoglyphs
+    "Acm3 H0ldings data.",                  # digit swaps
+    "N0rthwind style rename of Acme.",
+    "Ms A. Smith will brief you.",          # partial surname
+    "alice dot s at acme",                  # partial e-mail
+])
+def test_round4_obfuscations_never_reach_a_brief(setup, scope):
+    test_obfuscated_identifiers_never_reach_a_brief(setup, scope)
+    tid, deal_id, pid = setup
+    with tenant_session(tid) as s:
+        with pytest.raises(partners.PartnerError):
+            partners.prepare_brief(s, partner_id=pid, deal_id=deal_id, scope=scope, actor="CEO")
+
+
+def test_generic_mailboxes_and_short_names_do_not_break_ordinary_text(tenant):
+    tid, _ = tenant
+    with tenant_session(tid) as s:
+        c, _ = crm.upsert_contact(s, email="info@zenfleet.example", first_name="Wei", last_name="Li",
+                                  company="Zenfleet Ltd")
+        deal = crm.create_deal(s, contact_id=c.id, title="Fleet review", value="100")
+        p = partners.register(s, name="P1", region="india", contact_email="a@p1.example", actor="owner")
+        partners.attest_nda(s, p.id, on_file=True, actor="owner")
+        doc = partners.prepare_brief(s, partner_id=p.id, deal_id=deal.id, actor="CEO",
+                                     scope="We need information about the fleet; smithing and client lists.")
+        assert "information" in doc.markdown and "client lists" in doc.markdown and "CClient" not in doc.markdown
+
+
+def test_api_approvals_include_preview(setup, tenant):
+    from fastapi.testclient import TestClient
+
+    from wwos.api import app
+
+    tid, deal_id, pid = setup
+    _, key = tenant
+    with tenant_session(tid) as s:
+        doc = partners.prepare_brief(s, partner_id=pid, deal_id=deal_id, scope="Review depot costs.", actor="CEO")
+        ceo = ToolContext(s, s.get(Tenant, tid), find_agent(s, role="ceo"))
+        execute_tool(ceo, "partners.send_brief", {"partner_id": pid, "document_id": doc.id})
+    with TestClient(app) as c:
+        [row] = c.get("/api/approvals", headers={"Authorization": f"Bearer {key}"}).json()
+        assert "Review depot costs." in row["preview"]["body"] and "desk@mumbaipartners.in" in row["preview"]["to"]

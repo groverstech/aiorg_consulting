@@ -494,3 +494,21 @@ def test_successful_logins_do_not_count_towards_lockout(tenant):
     with TestClient(app) as c:
         codes = [c.post("/login", data={"api_key": key}, follow_redirects=False).status_code for _ in range(15)]
         assert set(codes) == {303}
+
+
+def test_agents_cannot_raise_owner_set_budgets_or_spoof_role_case(tenant):
+    tid, _ = tenant
+    with tenant_session(tid) as s:
+        t = s.get(Tenant, tid)
+        tech = find_agent(s, role="technology")
+        with pytest.raises(lifecycle.ProvisioningError, match="owner-set"):
+            lifecycle.revise(s, t, find_agent(s, role="sales"), actor_agent=tech, monthly_budget_usd="100")
+        with pytest.raises(lifecycle.ProvisioningError, match="reserved"):
+            lifecycle.provision(s, t, name="Boss", role=" CEO ", department_code="executive", instructions=INSTR,
+                                tools=["deals.get"], creator=find_agent(s, role="ceo"))
+        # Re-allocation among agent-created specialists is still allowed (resource management).
+        spec = lifecycle.provision(s, t, name="Analyst", role="specialist", department_code="sales",
+                                   instructions=INSTR, tools=["deals.get"], creator=find_agent(s, role="ceo"),
+                                   monthly_budget_usd="5")
+        new = lifecycle.revise(s, t, spec, actor_agent=tech, monthly_budget_usd="10")
+        assert new.status == "active" and new.monthly_budget_usd == Decimal("10")

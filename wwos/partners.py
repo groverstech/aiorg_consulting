@@ -85,9 +85,39 @@ LEGAL_SUFFIXES = {"ltd", "limited", "inc", "llc", "llp", "plc", "pvt", "private"
 MIN_FINGERPRINT = 4
 
 
+# Look-alike characters folded to Latin before matching (Cyrillic/Greek homoglyphs, digit swaps).
+_CONFUSABLES = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x", "к": "k", "м": "m", "т": "t",
+    "н": "h", "в": "b", "і": "i", "ј": "j", "ѕ": "s", "ԁ": "d", "ɡ": "g", "α": "a", "ο": "o", "ρ": "p",
+    "ν": "v", "τ": "t", "ι": "i", "κ": "k", "ε": "e", "Α": "a", "Β": "b", "Ε": "e", "Κ": "k", "Μ": "m",
+    "Ν": "n", "Ο": "o", "Ρ": "p", "Τ": "t", "Χ": "x", "Υ": "y",
+    "А": "a", "В": "b", "Е": "e", "К": "k", "М": "m", "Н": "h", "О": "o", "Р": "p", "С": "c", "Т": "t",
+    "Х": "x", "У": "y", "І": "i", "Ј": "j", "Ѕ": "s",
+})
+_DIGIT_SWAPS = str.maketrans({"0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"})
+# Generic mailbox names: never treated as identifying (avoids refusing ordinary words like "information").
+GENERIC_LOCALS = {"info", "contact", "sales", "admin", "hello", "office", "support", "enquiries", "inquiries",
+                  "team", "mail", "ops", "accounts", "billing", "hr", "jobs", "noreply", "no-reply", "help",
+                  "finance", "marketing", "careers", "service", "services"}
+
+
+def _fold(text: str) -> str:
+    """Unicode compatibility form, homoglyphs folded to Latin, accents dropped, lower case."""
+    import unicodedata
+
+    text = unicodedata.normalize("NFKC", text).translate(_CONFUSABLES)
+    text = "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
+    return text.lower()
+
+
 def _norm(text: str) -> str:
-    """Lower-case letters and digits only: defeats spacing, punctuation and case tricks."""
-    return re.sub(r"[^a-z0-9]", "", text.lower())
+    """Letters and digits only, after folding: defeats spacing, punctuation, case and homoglyph tricks."""
+    return re.sub(r"[^a-z0-9]", "", _fold(text))
+
+
+def _norm_letters(text: str) -> str:
+    """Like _norm but with digit-for-letter swaps undone ("N0rthw1nd" -> "northwlnd")."""
+    return re.sub(r"[^a-z0-9]", "", _fold(text).translate(_DIGIT_SWAPS))
 
 
 def _identifiers(s: Session, deal: Deal) -> list[str]:
@@ -103,7 +133,9 @@ def _identifiers(s: Session, deal: Deal) -> list[str]:
                 c.email.rsplit("@", 1)[1]]
     if company:
         ids += [company.name, company.website]
-    return sorted({i.strip() for i in ids if i and len(i.strip()) >= 2}, key=len, reverse=True)
+    # Names shorter than 3 characters are not replaced literally (they would mangle ordinary words);
+    # the fingerprint check still covers them as whole words.
+    return sorted({i.strip() for i in ids if i and len(i.strip()) >= 3}, key=len, reverse=True)
 
 
 def _domain_label(domain: str) -> str:
@@ -125,33 +157,50 @@ def fingerprints(s: Session, deal: Deal) -> set[str]:
         contacts += list(s.scalars(select(Contact).where(Contact.company_id == company.id)))
     for c in {c.id: c for c in contacts if c}.values():
         local, domain = c.email.rsplit("@", 1)
-        fps |= {_norm(c.email), _norm(local), _domain_label(domain),
-                _norm(f"{c.first_name}{c.last_name}"), _norm(c.last_name)}
+        fps |= {_norm(c.email), _domain_label(domain), _norm(f"{c.first_name}{c.last_name}"), _norm(c.last_name)}
+        if local.lower() not in GENERIC_LOCALS:
+            fps.add(_norm(local))
+        # each part of a multi-part surname, matched as a whole word ("Ms A. Smith" for "Smith Jones")
+        fps |= {_norm(part) for part in re.split(r"[\s-]+", c.last_name or "") if len(part) >= 4}
         digits = re.sub(r"\D", "", c.phone or "")
         if len(digits) >= 7:
             fps.add(digits[-7:])
     if company:
         core = [w for w in re.split(r"[\s.,()/&-]+", company.name.lower()) if w and w not in LEGAL_SUFFIXES]
         fps.add(_norm(" ".join(core)))
-        if core and len(core[0]) >= 5:
-            fps.add(_norm(core[0]))  # the distinctive part, e.g. "northwind" of Northwind Logistics
+        if core and len(core[0]) >= 3:
+            fps.add(_norm(core[0]))  # the distinctive part, e.g. "northwind" of Northwind Logistics, "acme"
         if company.website:
             fps.add(_domain_label(re.sub(r"^https?://", "", company.website).split("/")[0]))
-    return {fp for fp in fps if len(fp) >= MIN_FINGERPRINT and fp != "client"}
+    return {fp for fp in fps if len(fp) >= 3 and fp != "client" and fp not in GENERIC_LOCALS}
 
 
 def anonymise(s: Session, deal: Deal, text: str) -> str:
     name = code_name(deal.id)
     for ident in _identifiers(s, deal):
-        text = re.sub(re.escape(ident), name, text, flags=re.IGNORECASE)
+        # Whole-word replacement: "Li" never turns "Client" into "CClient-..."; "Smith" leaves "smithing".
+        pattern = (r"(?<![\w])" if ident[0].isalnum() else "") + re.escape(ident) + (r"(?![\w])" if ident[-1].isalnum() else "")
+        text = re.sub(pattern, name, text, flags=re.IGNORECASE)
     return text
 
 
 def leaks(s: Session, deal: Deal, text: str) -> list[str]:
     """Fingerprints of the client still present in ``text`` (after normalisation)."""
-    norm = _norm(text.replace(code_name(deal.id), ""))
+    text = text.replace(code_name(deal.id), " ")
+    norm, swapped = _norm(text), _norm_letters(text)
+    words = set(re.findall(r"[a-z0-9]+", _fold(text))) | set(re.findall(r"[a-z]+", _fold(text).translate(_DIGIT_SWAPS)))
     digits = re.sub(r"\D", "", text)
-    return sorted(fp for fp in fingerprints(s, deal) if fp in norm or (fp.isdigit() and fp in digits))
+    found = []
+    for fp in fingerprints(s, deal):
+        if fp.isdigit():
+            hit = fp in digits
+        elif len(fp) < MIN_FINGERPRINT + 1:  # short names: whole words only ("Acme", "Tata", "IBM")
+            hit = fp in words
+        else:
+            hit = fp in norm or fp.translate(_DIGIT_SWAPS) in swapped
+        if hit:
+            found.append(fp)
+    return sorted(found)
 
 
 def prepare_brief(s: Session, *, partner_id: str, deal_id: str, scope: str, actor: str) -> Document:

@@ -127,6 +127,7 @@ def provision(s: Session, tenant: Tenant, *, name: str, role: str, department_co
               version: int = 1, replacing_agent_id: str | None = None, activate: bool = True,
               baseline_tools: list[str] | None = None, trace=None) -> Agent:
     model = model or get_settings().default_model
+    role = (role or "").strip().lower()  # "CEO" and "ceo " are the same role
     budget = Decimal(str(monthly_budget_usd))
     validate_spec(s, tenant, creator=creator, tools=tools, model=model, monthly_budget_usd=budget, role=role,
                   can_provision=can_provision, instructions=instructions, replacing_agent_id=replacing_agent_id,
@@ -195,6 +196,11 @@ def revise(s: Session, tenant: Tenant, agent: Agent, *, actor_agent: Agent | Non
         raise ProvisioningError("cannot revise a retired agent")
     if agent.can_provision_agents and actor_agent is not None:
         raise ProvisioningError("only the owner can revise a provisioning-capable agent")
+    if (actor_agent is not None and monthly_budget_usd is not None and agent.created_by == OWNER
+            and Decimal(str(monthly_budget_usd)) > agent.monthly_budget_usd):
+        # Budgets the owner set (founding agents) can only be raised by the owner. Agents may still
+        # re-allocate budget among agent-created specialists, within the organisation budget.
+        raise ProvisioningError("raising an owner-set agent budget requires the owner")
     dept = s.get(Department, agent.department_id)
     new = provision(
         s, tenant, name=agent.name, role=agent.role, department_code=dept.code,

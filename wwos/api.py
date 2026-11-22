@@ -509,10 +509,16 @@ def drain(p: Principal = Depends(require("owner"))) -> dict:
 
 @app.get("/api/approvals")
 def list_approvals(status: str = "pending", s: Session = Depends(viewer_session)) -> list[dict]:
-    return [_row(r, "id", "category", "action", "params", "requested_by", "reason", "status", "decided_by",
-                 "decided_at", "created_at")
-            for r in s.scalars(select(ApprovalRequest).where(ApprovalRequest.status == status)
-                               .order_by(ApprovalRequest.created_at))]
+    """Each request includes ``preview``: exactly what would be sent (recipient, subject, body), so
+    an owner deciding through the API sees the same content as on the dashboard."""
+    out = []
+    for r in s.scalars(select(ApprovalRequest).where(ApprovalRequest.status == status)
+                       .order_by(ApprovalRequest.created_at)):
+        row = _row(r, "id", "category", "action", "params", "requested_by", "reason", "status", "decided_by",
+                   "decided_at", "created_at")
+        row["preview"] = _approval_preview(s, r)
+        out.append(row)
+    return out
 
 
 class DecisionIn(BaseModel):
