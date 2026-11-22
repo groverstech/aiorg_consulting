@@ -79,11 +79,11 @@ class OfflineProvider:
 class AnthropicProvider:
     name = "anthropic"
 
-    def __init__(self) -> None:
+    def __init__(self, client=None) -> None:
         import anthropic  # imported lazily so offline mode needs no credentials
 
         self._anthropic = anthropic
-        self._client = anthropic.Anthropic(max_retries=2)
+        self._client = client or anthropic.Anthropic(max_retries=2)
 
     def complete(self, *, model: str, system: str, messages: list[dict], tools: list[dict],
                  max_tokens: int) -> LLMResult:
