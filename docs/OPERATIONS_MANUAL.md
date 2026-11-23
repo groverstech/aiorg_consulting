@@ -21,7 +21,7 @@ Defaults: SQLite (`var/wwos.db`, single process only), offline model (no spend),
 | `WWOS_ENV` | `development` | `production` enforces safe settings and refuses an unmigrated schema |
 | `WWOS_DATABASE_URL` | `sqlite:///./var/wwos.db` | SQLAlchemy URL (PostgreSQL in production) |
 | `WWOS_DATABASE_HOST_SOCKET`, `WWOS_DB_USER`, `WWOS_DB_NAME`, `WWOS_DB_PASSWORD` | — | Cloud SQL socket form, used when `WWOS_DATABASE_URL` is unset |
-| `WWOS_LLM_PROVIDER` | `offline` | `anthropic` to call Claude |
+| `WWOS_LLM_PROVIDER` | `offline` (dev/tests) | Production: `none` (zero-spend, AI off; default profile) or `anthropic` (paid) |
 | `ANTHROPIC_API_KEY` | — | Claude API key (Secret Manager in GCP) |
 | `WWOS_DEFAULT_MODEL` | `claude-opus-5-5` | Model for new agents (approved list in `wwos/budget.py`) |
 | `WWOS_AGENT_RUNTIME` | `messages` | `agent_sdk` runs agents on the Claude Agent SDK (needs the `agent-sdk` extra; see `AGENT_SDK_EVALUATION.md`) |
@@ -31,7 +31,8 @@ Defaults: SQLite (`var/wwos.db`, single process only), offline model (no spend),
 | `WWOS_MAX_AGENTS_PER_TENANT` | `40` | Live agent headcount ceiling |
 | `WWOS_AGENT_FAILURE_SUSPEND_THRESHOLD` | `3` | Consecutive failures before auto-suspension |
 | `WWOS_EXTERNAL_EMAIL_REQUIRES_APPROVAL` | `true` | Owner policy gate on client e-mail (partner mail is always gated) |
-| `WWOS_EMAIL_TRANSPORT` | `outbox` | `smtp` for real delivery |
+| `WWOS_EMAIL_TRANSPORT` | `outbox` (dev/tests) | Production: `manual` (you send approved e-mails yourself) or `smtp` |
+| `WWOS_EMAIL_DAILY_LIMIT` | `100` | Maximum e-mails delivered per 24 h (keeps a free mailbox within its limits) |
 | `WWOS_SMTP_HOST/PORT/USER/PASSWORD/FROM` | — / 587 | SMTP account |
 | `WWOS_SMTP_SECURITY` | `starttls` | `starttls`, `ssl` (port 465) or `none` (refused in production) |
 | `WWOS_SMTP_TIMEOUT_SECONDS` | `30` | Per-connection timeout |

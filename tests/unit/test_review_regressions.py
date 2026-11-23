@@ -431,9 +431,9 @@ def test_lead_keys_cannot_squat_schedule_keys(tenant, other_tenant):
         r = c.post("/api/leads", headers={"Authorization": f"Bearer {key}"},
                    json={**LEAD, "idempotency_key": "sched:ceo-daily-review:2026-12-01"})
         assert r.status_code == 202
-    assert schedule.tick(day) == 4  # both tenants' two jobs still scheduled
+    assert schedule.tick(day) == 6  # both tenants' three jobs (briefing + two AI reviews) still scheduled
     with tenant_session(oid) as s:
-        assert len(s.scalars(select(Task).where(Task.idempotency_key.like("sched:%"))).all()) == 2
+        assert len(s.scalars(select(Task).where(Task.idempotency_key.like("sched:%"))).all()) == 3
 
 
 @pytest.mark.parametrize("value", ["NaN", "Infinity", "1e30", "-1", "abc"])

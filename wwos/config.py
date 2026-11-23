@@ -75,6 +75,8 @@ class Settings:
     # starttls (port 587) | ssl (implicit TLS, port 465) | none (local testing only; refused in production)
     smtp_security: str = field(default_factory=lambda: _env("WWOS_SMTP_SECURITY", "starttls"))
     smtp_timeout_seconds: float = field(default_factory=lambda: float(_env("WWOS_SMTP_TIMEOUT_SECONDS", "30")))
+    # Safety cap on e-mails delivered per 24 h across the installation (keeps a free mailbox within its limits).
+    email_daily_limit: int = field(default_factory=lambda: int(_env("WWOS_EMAIL_DAILY_LIMIT", "100")))
     task_max_attempts: int = field(default_factory=lambda: int(_env("WWOS_TASK_MAX_ATTEMPTS", "4")))
     task_lease_seconds: int = field(default_factory=lambda: int(_env("WWOS_TASK_LEASE_SECONDS", "900")))
     # Grants access to /health/details (cross-tenant queue counts). Empty = endpoint disabled.
@@ -100,8 +102,9 @@ def production_problems(cfg: Settings | None = None) -> list[str]:
     problems = []
     if not cfg.database_url.startswith("postgresql"):
         problems.append("WWOS_DATABASE_URL must be PostgreSQL in production (SQLite is single-process, dev only)")
-    if cfg.llm_provider not in ("anthropic", "offline"):
-        problems.append("WWOS_LLM_PROVIDER must be 'anthropic' or 'offline'")
+    if cfg.llm_provider not in ("anthropic", "none"):
+        problems.append("WWOS_LLM_PROVIDER must be 'none' (zero-spend, no AI) or 'anthropic' in production; "
+                        "'offline' is a test simulator that would pretend agents did work")
     if cfg.agent_runtime not in ("messages", "agent_sdk"):
         problems.append("WWOS_AGENT_RUNTIME must be 'messages' or 'agent_sdk'")
     if cfg.agent_runtime == "agent_sdk":
@@ -114,10 +117,17 @@ def production_problems(cfg: Settings | None = None) -> list[str]:
             problems.append("WWOS_SMTP_SECURITY=none is not allowed in production")
         if not (cfg.smtp_host and cfg.smtp_from):
             problems.append("WWOS_SMTP_HOST and WWOS_SMTP_FROM are required for SMTP")
-    if not cfg.cookie_secure:
-        problems.append("WWOS_COOKIE_SECURE must be true in production (dashboard served over HTTPS)")
-    if not cfg.public_origin.startswith("https://"):
-        problems.append("WWOS_PUBLIC_ORIGIN must be the https:// URL of the dashboard")
+    local_only = cfg.public_origin.startswith(("http://localhost", "http://127.0.0.1"))
+    if not (cfg.public_origin.startswith("https://") or local_only):
+        problems.append("WWOS_PUBLIC_ORIGIN must be the https:// URL of the dashboard, or http://localhost:<port> "
+                        "when the dashboard is only reachable on this machine")
+    if not cfg.cookie_secure and not local_only:
+        problems.append("WWOS_COOKIE_SECURE must be true unless the dashboard is local-only (http://localhost)")
+    if cfg.email_transport not in ("manual", "smtp", "outbox"):
+        problems.append("WWOS_EMAIL_TRANSPORT must be 'manual' or 'smtp'")
+    if cfg.email_transport == "outbox":
+        problems.append("WWOS_EMAIL_TRANSPORT=outbox only records mail in memory; use 'manual' (you send approved "
+                        "e-mails yourself) or 'smtp' in production")
     if cfg.admin_token and len(cfg.admin_token) < 32:
         problems.append("WWOS_ADMIN_TOKEN must be at least 32 characters (or empty to disable)")
     if cfg.org_monthly_budget_usd <= 0 or cfg.max_agent_budget_usd <= 0:

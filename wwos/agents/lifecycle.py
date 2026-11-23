@@ -56,8 +56,8 @@ def validate_spec(s: Session, tenant: Tenant, *, creator: Agent | None, tools: l
         raise ProvisioningError(f"unknown tools: {sorted(unknown)}")
     if not instructions or len(instructions.strip()) < 40:
         raise ProvisioningError("instructions must describe the agent's job (min 40 characters)")
-    if monthly_budget_usd <= 0:
-        raise ProvisioningError("monthly budget must be positive")
+    if monthly_budget_usd < 0:
+        raise ProvisioningError("monthly budget cannot be negative")  # $0 = this agent may never spend
     if monthly_budget_usd > cfg.max_agent_budget_usd:
         raise ProvisioningError(f"agent budget exceeds the per-agent ceiling ${cfg.max_agent_budget_usd}")
     allocated = allocated_to_agents(s, exclude_agent_id=replacing_agent_id)
@@ -104,6 +104,10 @@ def acceptance_test(s: Session, tenant: Tenant, agent: Agent, trace=None) -> tup
         except PermissionDenied:
             pass
     own_trace = trace is None
+    from ..llm import ai_enabled
+
+    if not ai_enabled():  # zero-spend mode: static checks only, no model call
+        return True, "passed (static checks; AI off)"
     trace = RunTrace() if own_trace else trace
     try:
         result = run_agent_prompt(
@@ -150,7 +154,7 @@ def provision(s: Session, tenant: Tenant, *, name: str, role: str, department_co
     ok, detail = acceptance_test(s, tenant, agent, trace)
     if ok:
         agent.status = "active"
-        agent.status_reason = "acceptance test passed"
+        agent.status_reason = "acceptance test passed" if detail == "passed" else f"acceptance test {detail}"
     else:
         agent.status = "retired"
         agent.status_reason = f"acceptance test failed: {detail}"

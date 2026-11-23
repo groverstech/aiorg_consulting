@@ -4,6 +4,9 @@ Each item states its impact and the path to resolution. None is a known critical
 
 | # | Issue | Impact | Resolution path |
 |---|---|---|---|
+| 0 | **Zero-spend mode: AI is off** (owner instruction). | CEO objectives, agent tasks and AI reviews pause; the rules engine runs leads, proposals, follow-ups, briefings, hand-offs, partners. | Owner enables AI with a cap when willing to spend (`ZERO_COST_GUIDE.md`). |
+| 0a | **Zero-cost hosting is the owner's computer.** | Runs only while it is on; dashboard local-only; backups on local disk unless copied elsewhere. | Paid GCP option documented; any always-on machine the owner already has also works. |
+| 0b | **Free-tier facts not re-verifiable here** (Gmail limits, GitHub Actions for public repos, Tailscale): those hosts were blocked in this session. | Figures not quoted; daily e-mail cap configurable. | Owner checks provider pages. |
 | 1 | **Live Claude behaviour unverified.** All agent decisions in tests come from simulated models. | Quality of planning, QA verdicts, writing and prompt-injection resistance of the live model is unknown. Code gates hold regardless. | Owner authorises AI spend (OA-2); run the acceptance scenarios against the live model with a small cap; tune instructions. |
 | 2 | **Not deployed.** No GCP resources exist. | System runs only locally/CI. | Owner actions OA-3/OA-4 (deployment guide). |
 | 3 | **Anonymisation is best-effort.** Misspellings, initials, spelled-out numbers and paraphrase can evade text filters. | Possible client identification in a partner brief. | Every partner disclosure is owner-approved with full preview (mandatory control). |

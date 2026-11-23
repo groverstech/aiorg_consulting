@@ -19,7 +19,7 @@ from datetime import timedelta
 from email.message import EmailMessage
 from typing import Protocol
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -206,12 +206,14 @@ def resolve(s: Session, message_id: str, *, delivered: bool, actor: str) -> Outb
     msg = s.get(OutboundMessage, message_id)
     if msg is None:
         raise ValueError("message not found")
-    if msg.status not in ("unknown", "failed"):
-        raise ValueError(f"message is {msg.status}; only unknown or failed messages can be reconciled")
+    if msg.status not in ("unknown", "failed", "manual"):
+        raise ValueError(f"message is {msg.status}; only unknown, failed or manual messages can be reconciled")
     if delivered:
         msg.status, msg.sent_at = "sent", utcnow()
         log_activity(s, kind="email", summary=f"Email confirmed delivered: {msg.subject}",
                      contact_id=msg.contact_id, actor=actor)
+    elif msg.status == "manual":
+        raise ValueError("this message is waiting for you to send it by hand; mark it sent once you have")
     else:
         msg.status, msg.attempts = "queued", 0
     msg.last_error = f"reconciled by {actor}: {'delivered' if delivered else 're-queued'}"
@@ -260,6 +262,23 @@ def dispatch(limit: int = 50, tenant_id: str | None = None) -> int:
                 if now - updated < RETRY_BACKOFF * (2 ** (attempts - 1)):
                     continue  # exponential backoff between delivery attempts
             ids.append(mid)
+    settings = get_settings()
+    if settings.email_transport == "manual" and _transport_override is None:
+        # No mail account configured (zero-spend): approved messages wait for the owner to send them by hand.
+        with system_session(immediate=True) as s:
+            for mid in ids:
+                s.execute(update(OutboundMessage).where(OutboundMessage.id == mid, OutboundMessage.status == "queued")
+                          .values(status="manual", last_error="no mail account configured: send this e-mail "
+                                  "yourself, then mark it sent"))
+        return 0
+    with system_session() as s:
+        sent_24h = s.execute(select(func.count(OutboundMessage.id)).where(
+            OutboundMessage.status == "sent", OutboundMessage.sent_at >= now - timedelta(days=1))).scalar_one()
+    budget_left = max(0, settings.email_daily_limit - sent_24h)
+    if len(ids) > budget_left:
+        logging.getLogger("wwos.comms").warning("daily e-mail limit %s reached; %s message(s) wait",
+                                                settings.email_daily_limit, len(ids) - budget_left)
+        ids = ids[:budget_left]
     for mid in ids:
         with system_session(immediate=True) as s:
             claimed = s.execute(update(OutboundMessage).where(OutboundMessage.id == mid,

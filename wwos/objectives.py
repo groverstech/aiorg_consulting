@@ -44,6 +44,11 @@ class ObjectiveError(ValueError):
 def create(s: Session, *, title: str, description: str, deal_id: str | None = None, actor: str = "owner") -> Objective:
     from .workflows import enqueue
 
+    from .llm import ai_enabled
+
+    if not ai_enabled():
+        raise ObjectiveError("CEO objectives need AI, which is off (zero-spend mode). The rules engine still "
+                             "runs leads, proposals, follow-ups, delivery hand-offs and the daily briefing.")
     if not title.strip() or len(description.strip()) < 20:
         raise ObjectiveError("objective needs a title and a description of at least 20 characters")
     if deal_id is not None and s.get(Deal, deal_id) is None:

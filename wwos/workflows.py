@@ -329,6 +329,11 @@ def process(task_id: str, tenant_id: str, token: str) -> str:
         task = s.get(Task, task_id)
         if task.claim_token != token or task.status != "running":
             return "lease_lost"
+        from .llm import AIDisabled
+
+        if isinstance(error, AIDisabled):  # zero-spend mode: not a failure, nothing retried or penalised
+            _finish(s, task_id, token, status="skipped", last_error=f"skipped: {error}"[:4000])
+            return "skipped"
         last_error = f"{type(error).__name__}: {error}"[:4000]
         retryable = not isinstance(error, NON_RETRYABLE)
         if retryable and task.attempts < cfg.task_max_attempts:
@@ -474,7 +479,13 @@ def _wf_delivery_kickoff(s: Session, tenant: Tenant, task: Task, trace: RunTrace
         out, err = execute_tool(ToolContext(session=s, tenant=tenant, agent=legal, task_id=task.id),
                                 "legal.sign_agreement", {"document_id": sow.id, "counterparty": client}, trace)
         approval = None if err else out.get("approval_id")
-    delivery = find_agent(s, role="delivery")
+    from .llm import ai_enabled
+
+    delivery = find_agent(s, role="delivery") if ai_enabled() else None
+    if delivery is None:
+        crm.log_activity(s, kind="note", summary="Next step for the owner: agree start date, milestones and "
+                         "payment terms, then sign the SOW", deal_id=deal.id, contact_id=deal.contact_id,
+                         actor="workflow")
     if delivery is not None:
         enqueue(s, kind="agent_run", agent_id=delivery.id, idempotency_key=f"deal:{deal.id}:delivery-plan",
                 payload={"instruction": (
@@ -482,6 +493,13 @@ def _wf_delivery_kickoff(s: Session, tenant: Tenant, task: Task, trace: RunTrace
                     "Prepare a milestone plan proposal and log it against the deal with crm.log_activity. "
                     "Do not commit to dates or fees; those are confirmed by the owner.")})
     return {"sow_document_id": sow.id, "signature_approval_id": approval}
+
+
+@handler("workflow.daily_briefing")
+def _wf_daily_briefing(s: Session, tenant: Tenant, task: Task, trace: RunTrace) -> dict:
+    from . import briefing
+
+    return briefing.run(s, tenant, task, trace)
 
 
 # Objective orchestration steps (wwos/objectives.py)

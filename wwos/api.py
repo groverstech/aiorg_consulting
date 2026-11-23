@@ -513,6 +513,10 @@ def assign_task(body: TaskIn, p: Principal = Depends(require("operator")),
     a = _404(s.get(Agent, body.agent_id), "agent")
     if a.status != "active":
         raise HTTPException(status_code=409, detail=f"agent is {a.status}")
+    from .llm import ai_enabled
+
+    if not ai_enabled():
+        raise HTTPException(status_code=409, detail="agent tasks need AI, which is off (zero-spend mode)")
     if a.can_provision_agents and p.role != "owner":
         # Provisioning-capable agents act with owner-level reach; only the owner may task them.
         raise HTTPException(status_code=403, detail="owner role required to assign work to this agent")
@@ -625,6 +629,11 @@ def dashboard_data(s: Session) -> dict:
         "attention": list(s.scalars(select(Agent).where(Agent.status == "suspended").order_by(Agent.name))),
         "objectives": list(s.scalars(select(_Objective).order_by(_Objective.created_at.desc()).limit(8))),
         "unknown_mail": list(s.scalars(select(OutboundMessage).where(OutboundMessage.status.in_(["unknown", "failed"])))),
+        "manual_mail": list(s.scalars(select(OutboundMessage).where(OutboundMessage.status == "manual")
+                                      .order_by(OutboundMessage.created_at))),
+        "briefing": s.scalars(select(Document).where(Document.kind == "briefing")
+                              .order_by(Document.created_at.desc())).first(),
+        "ai_on": __import__("wwos.llm", fromlist=["ai_enabled"]).ai_enabled(),
     }
 
 
@@ -768,6 +777,21 @@ def dashboard_decide(approval_id: str, request: Request, decision: str = Form(..
     p = _dashboard_owner(request)
     with db.tenant_session(p.tenant_id) as s:
         approvals.decide(s, approval_id, approve=decision == "approve", actor=f"owner:{p.key_name}")
+    return RedirectResponse("/dashboard", status_code=303)
+
+
+@app.post("/dashboard/messages/{message_id}/sent")
+def dashboard_mark_sent(message_id: str, request: Request):
+    """Owner confirms an e-mail they sent by hand (manual mode) or confirmed delivered."""
+    from . import comms
+
+    p = _dashboard_owner(request)
+    with db.tenant_session(p.tenant_id) as s:
+        _404(s.get(OutboundMessage, message_id), "message")
+        try:
+            comms.resolve(s, message_id, delivered=True, actor=f"owner:{p.key_name}")
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
     return RedirectResponse("/dashboard", status_code=303)
 
 

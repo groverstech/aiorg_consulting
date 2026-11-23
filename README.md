@@ -6,8 +6,9 @@ CRM, proposals, client correspondence, partner coordination, invoicing and repor
 their own workforce. Hard limits set by the owner are enforced in code: budgets, permissions,
 approvals and confidentiality.
 
-**Status:** implemented, tested and CI-validated; **not deployed**. Live AI and real e-mail are
-off until the owner authorises them. See `docs/PROJECT_STATE.md`.
+**Status:** implemented, tested and CI-validated; **not deployed**. **Default profile: zero cost.** It
+runs on your own computer with AI off, and the rules engine operates the business
+(`docs/ZERO_COST_GUIDE.md`). Paid AI and Google Cloud hosting are opt-in. See `docs/PROJECT_STATE.md`.
 
 ## What it does
 - **CEO autonomy.** Give the CEO an objective. It plans department tasks, creates missing specialist agents, delegates, gets QA review, retries or reassigns failed work, updates the CRM and writes an executive report.
@@ -21,6 +22,7 @@ off until the owner authorises them. See `docs/PROJECT_STATE.md`.
 ## Documentation
 | Document | Contents |
 |---|---|
+| `docs/ZERO_COST_GUIDE.md` | **Start here:** running at $0 on your own computer |
 | `MASTER_IMPLEMENTATION_MANDATE.md` | Reconstructed business mandate (pending owner confirmation) |
 | `docs/PROJECT_STATE.md` | Status, results, owner actions |
 | `docs/ARCHITECTURE.md` | How it works |

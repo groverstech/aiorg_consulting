@@ -1,11 +1,11 @@
 # Test report
 
-_Run on 2026-11-22 against commit `71223e0` (branch `claude/peaceful-ride-6fjetj`). Re-run with the
+_Run on 2026-11-22 against the zero-spend restructuring (2026-11-23) (branch `claude/peaceful-ride-6fjetj`). Re-run with the
 commands at the end. CI runs the same suite on every push (see "CI" below)._
 
 ## Result
 
-**198 passed, 0 failed, 0 skipped** (SQLite + PostgreSQL 16 + headless Chromium + the real Claude Code
+**208 passed, 0 failed, 0 skipped** (SQLite + PostgreSQL 16 + headless Chromium + the real Claude Code
 CLI from `claude-agent-sdk` 0.2.187 against a local fake API). Without `WWOS_TEST_PG_URL` the 12
 PostgreSQL tests are skipped; without the `agent-sdk` extra the 13 Agent SDK tests are skipped.
 
@@ -39,6 +39,7 @@ incurred and no real person was contacted.
 | Autonomous organisation (mandate §6) | `test_ceo_runs_an_objective_end_to_end_without_human_intervention` (SQLite + PostgreSQL) and `test_full_autonomous_organisation_scenario_on_the_agent_sdk` (every agent through the real CLI) | 10 steps below |
 | Agent SDK runtime | `test_agent_sdk_runtime.py` (13), `test_review_round5.py` (8) | built-ins absent; only gated tools; approval gates; per-call budget refusal before the model is called; clamped `max_tokens`; real key never given to the CLI; canary proves no inherited env reaches the model; no orphan CLI after SIGKILL (mutation-checked); no temp files left; broken streams still recorded |
 | Partner acquisition (CA/CS, international) | `test_partner_acquisition_outreach_is_owner_approved_and_prospects_get_no_work`, `test_ca_cs_categories_only_for_indian_partners`, round-5 partner tests | agents cannot confirm; outreach owner-approved; no work to prospects; shadowing/inactive blocked; client identity refused in partner mail |
+| Zero-spend mode | `test_zero_spend.py` (10) | every model provider booby-trapped; $0 tenant; full lead → proposal → approval → manual e-mail → won → SOW cycle; daily briefing and weekly follow-up de-duplication; AI-only features refuse; skipped (not failed) AI work; a live provider on $0 budgets cannot spend; e-mail daily cap; production profile rules |
 | Client delivery | `test_won_deal_hands_off_to_delivery_without_inventing_terms` | won → SOW draft → owner signature request → planning task; no invented terms or invoices |
 | Confidentiality | `test_partner_confidentiality.py` (21) | obfuscation attempts, forged briefs, NDA withdrawal after approval, sub-domains, previews |
 | Production configuration | `test_production_config.py`, `test_deploy_support.py` | unsafe settings refused, Cloud SQL socket URL, structured logs, worker health |

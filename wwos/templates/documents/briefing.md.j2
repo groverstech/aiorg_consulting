@@ -1,0 +1,45 @@
+# Daily briefing — {{ day }}
+_Rules engine · AI: {{ ai }} · AI spend this month: ${{ ai_spend }}_
+
+## Needs your decision
+{% for a in approvals %}
+- {{ a.category }}: {{ a.count }}
+{% else %}
+- Nothing pending.
+{% endfor %}
+
+## Pipeline
+| Stage | Deals | Value |
+|---|---:|---:|
+{% for p in pipeline %}
+| {{ p.stage }} | {{ p.count }} | {{ p.value }} |
+{% endfor %}
+
+New contacts in the last 24 hours: {{ new_leads }}.
+
+## Stalled deals (no activity for 7 days)
+{% for d in stalled %}
+- {{ d.title }} — {{ d.stage }}, {{ d.value }}
+{% else %}
+- None.
+{% endfor %}
+
+Follow-up e-mails drafted for your approval: {{ followups }}.
+
+## Partner pipeline
+{% for p in partner_stages %}
+- {{ p.stage }}: {{ p.count }}
+{% else %}
+- No partners recorded.
+{% endfor %}
+{% if stale_partners %}
+
+Prospects without progress for 14 days: {{ stale_partners|join(", ") }}.
+{% endif %}
+
+## Operations
+- Dead tasks (24 h): {{ ops.dead_tasks }}
+- Skipped tasks (AI off, 24 h): {{ ops.skipped_tasks }}
+- E-mails waiting for you to send by hand: {{ ops.emails_to_send_by_hand }}
+- E-mails needing reconciliation: {{ ops.emails_unknown_or_failed }}
+- Last QA scan: {{ qa }}

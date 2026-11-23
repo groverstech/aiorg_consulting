@@ -12,6 +12,17 @@
  <div class="card kpi"><div class="l">Contacts</div><div class="v">{{ contacts }}</div></div>
 </div>
 
+<div class="card"><h2>Today</h2>
+<p>{% if briefing %}<a href="/api/documents/{{ briefing.id }}">{{ briefing.title }}</a>{% else %}The first daily briefing appears after the worker's next scheduling pass.{% endif %}
+&middot; AI: {% if ai_on %}<span class="pill active">on</span>{% else %}<span class="pill suspended">off (zero-spend mode)</span>{% endif %}</p></div>
+
+{% if manual_mail %}<div class="card"><h2>E-mails for you to send</h2>
+<p class="muted">No mail account is configured. Send these yourself, then mark each one sent.</p><table>
+{% for m in manual_mail %}<tr><td><strong>{{ m.to_address }}</strong><div class="muted">{{ m.subject }}</div>
+<details><summary class="muted">Show text</summary><pre style="white-space:pre-wrap">{{ m.body }}</pre></details></td>
+<td>{% if role == "owner" %}<form method="post" action="/dashboard/messages/{{ m.id }}/sent"><button class="ok">Mark sent</button></form>{% endif %}</td></tr>{% endfor %}
+</table></div>{% endif %}
+
 {% if attention or unknown_mail %}<div class="card"><h2>Needs your attention</h2><table>
 {% for a in attention %}<tr><td>{{ a.name }} v{{ a.version }} is <span class="pill suspended">suspended</span></td><td class="muted">{{ a.status_reason }}</td>
 <td>{% if role == "owner" %}<form method="post" action="/dashboard/agents/{{ a.id }}/reactivate"><button>Re-test &amp; reactivate</button></form>{% endif %}</td></tr>{% endfor %}

@@ -179,3 +179,16 @@ Supersedes the part of ADR-021 where an NDA attestation activated a partner.
 Terraform optionally creates a GCP billing budget with e-mail alerts at 50 %, 90 % and 100 %
 (and forecast 100 %), alongside the existing hard limits: one worker instance, API max 3 instances,
 fixed database tier. AI spend is capped separately by the atomic budget guard.
+
+### ADR-030: Zero-spend production profile (owner instruction 2026-11-23)
+The owner does not want to spend money. The default production profile is therefore:
+- **AI:** off (`WWOS_LLM_PROVIDER=none`, $0 budgets). The Claude API has no free tier.
+- **Rules engine:** a deterministic daily briefing and stalled-deal follow-ups replace the AI reviews.
+- **E-mail:** `manual` (the owner sends approved mail), or the owner's own mailbox over SMTP with a daily cap.
+- **Hosting:** the owner's own computer via Docker Compose, with a local-only dashboard (plain HTTP is accepted only for localhost).
+
+Google Cloud is no longer the default. Its free VM still incurs ~$3.65/month for a public IPv4 address,
+and Cloud SQL has no free tier. The GCP Terraform remains as a paid option.
+
+AI-only features (objectives, agent tasks) refuse clearly. Internally queued AI work is marked `skipped`.
+The production check refuses the `offline` simulator, because it would fake agent work.

@@ -1,5 +1,9 @@
 # Deployment guide
 
+> **Default since 2026-11-23: zero cost.** Run on your own computer with AI off. See
+> `docs/ZERO_COST_GUIDE.md` and ADR-030. Everything below describes the **paid** Google Cloud option,
+> kept for when the owner decides to spend money.
+
 **Status: prepared, not deployed.** No cloud resources have been created and nothing has been
 deployed. Every step below that creates a chargeable resource needs the owner's authorisation and
 credentials. CI validates the Terraform (`terraform validate`) and builds and starts the container image on

@@ -24,7 +24,8 @@ REQUIRED_FIELDS: dict[str, list[str]] = {
     "invoice": ["client_name", "invoice_number", "line_items", "currency", "due_days"],
     "status_report": ["client_name", "period", "progress", "risks", "next_steps"],
     "partner_brief": ["partner_name", "client_code", "scope", "region"],
-    "executive_report": ["objective_title", "status", "summary", "spend"],  # tasks may legitimately be empty
+    "executive_report": ["objective_title", "status", "summary", "spend"],
+    "briefing": ["day", "ai", "pipeline", "ops", "qa"],  # tasks may legitimately be empty
 }
 
 COMPANY = {
@@ -97,7 +98,7 @@ def render(kind: str, data: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
 
 # Kinds that only system code may create: a partner brief must come from the anonymiser, and an
 # executive report from the objective coordinator. Agents and API callers cannot forge them.
-RESERVED_KINDS = {"partner_brief", "executive_report"}
+RESERVED_KINDS = {"partner_brief", "executive_report", "briefing"}
 
 
 def generate(s: Session, *, kind: str, title: str, data: dict[str, Any], deal_id: str | None = None,

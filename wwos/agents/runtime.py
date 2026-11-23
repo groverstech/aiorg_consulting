@@ -113,6 +113,10 @@ def run_agent_prompt(s: Session, tenant: Tenant, agent: Agent, prompt: str, *, m
                      trace: RunTrace | None = None, depth: int = 0) -> str:
     if agent.status not in ("active", "testing"):
         raise PermissionDenied(f"agent {agent.name} is {agent.status}")
+    from ..llm import AIDisabled, ai_enabled
+
+    if not ai_enabled():
+        raise AIDisabled(f"{agent.name} needs AI, which is off (zero-spend mode)")
     trace = trace if trace is not None else RunTrace()
     system = system_prompt(s, agent, tenant)
     from ..config import get_settings

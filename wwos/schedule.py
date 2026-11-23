@@ -55,7 +55,13 @@ def tick(now: datetime | None = None) -> int:
     for tid in tenant_ids:
         try:  # one tenant's problem must never stop other tenants' jobs or the QA scan
             with tenant_session(tid) as s:
-                for job in JOBS:
+                from .llm import ai_enabled
+
+                # Daily rules-based briefing always runs (no AI, no cost).
+                _, new = enqueue(s, kind="workflow.daily_briefing", payload={"date": _period_key("daily", now)},
+                                 idempotency_key=f"sched:daily-briefing:{_period_key('daily', now)}")
+                created += int(new)
+                for job in (JOBS if ai_enabled() else []):
                     agent = find_agent(s, role=job.role)
                     if agent is None:
                         continue

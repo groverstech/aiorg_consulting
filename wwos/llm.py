@@ -17,6 +17,11 @@ from typing import Any, Protocol
 from .config import get_settings
 
 
+class AIDisabled(RuntimeError):
+    """No language model is configured (WWOS_LLM_PROVIDER=none, the zero-spend mode). Nothing is
+    called and nothing is spent; callers fall back to rules or mark the work as skipped."""
+
+
 class TransientLLMError(RuntimeError):
     """Retryable failure (rate limit, overload, network)."""
 
@@ -133,9 +138,17 @@ def set_provider(provider: LLMProvider | None) -> None:
     _provider_override = provider
 
 
+def ai_enabled() -> bool:
+    """False in zero-spend mode. A test provider override always counts as enabled."""
+    return _provider_override is not None or get_settings().llm_provider != "none"
+
+
 def get_provider() -> LLMProvider:
     if _provider_override is not None:
         return _provider_override
-    if get_settings().llm_provider == "anthropic":
+    provider = get_settings().llm_provider
+    if provider == "anthropic":
         return AnthropicProvider()
+    if provider == "none":
+        raise AIDisabled("AI is off (WWOS_LLM_PROVIDER=none): no model is called and nothing is spent")
     return OfflineProvider()
