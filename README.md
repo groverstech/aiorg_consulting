@@ -35,11 +35,16 @@ runs on your own computer with AI off, and the rules engine operates the busines
 | `docs/AGENT_SDK_EVALUATION.md` | Claude Agent SDK evaluation and secured runtime |
 
 ## Quick start (local, no spend)
+For real use, follow `docs/ZERO_COST_GUIDE.md`. For a quick look on a development machine with AI off
+(no model is called, budgets are $0):
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ```
 ```bash
-.venv/bin/wwos create-tenant "White Waters Consulting Group" --budget 500
+export WWOS_LLM_PROVIDER=none
+```
+```bash
+.venv/bin/wwos create-tenant "White Waters Consulting Group" --budget 0
 ```
 ```bash
 .venv/bin/wwos serve

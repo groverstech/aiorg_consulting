@@ -1,6 +1,6 @@
 # Test report
 
-_Run on 2026-11-22 against the zero-spend restructuring (2026-11-23) (branch `claude/peaceful-ride-6fjetj`). Re-run with the
+_Run on 2026-11-23 against the zero-spend restructuring (branch `claude/peaceful-ride-6fjetj`). Re-run with the
 commands at the end. CI runs the same suite on every push (see "CI" below)._
 
 ## Result

@@ -1,6 +1,6 @@
 # Project state
 
-_Last updated: 2026-11-22. Branch `claude/peaceful-ride-6fjetj` (not merged, not deployed).
+_Last updated: 2026-11-23. Branch `claude/peaceful-ride-6fjetj` (not merged, not deployed).
 Update at the end of every session. CI status of every commit:
 https://github.com/groverstech/aiorg_consulting/actions?query=branch%3Aclaude%2Fpeaceful-ride-6fjetj_
 
@@ -24,8 +24,8 @@ https://github.com/groverstech/aiorg_consulting/actions?query=branch%3Aclaude%2F
 | GCP infrastructure, CI/CD, cloud budget alerts | ✅ Terraform + workflows | ✅ `terraform validate`, image build in CI | ✅ | ❌ not applied | ❌ |
 
 ## Latest results
-- Tests: **198 passed, 0 failed, 0 skipped** on `71223e0`: SQLite, PostgreSQL 16, headless Chromium, and the real Claude Code CLI against a local fake API (`TEST_REPORT.md`).
-- CI: every job and step passed on `c017555`, `851814d` and later pushes; the final HEAD is verified in the completion report.
+- Tests: **208 passed, 0 failed, 0 skipped** on the zero-spend restructuring: SQLite, PostgreSQL 16, headless Chromium, and the real Claude Code CLI against a local fake API (`TEST_REPORT.md`).
+- CI: every job and step (test, audit, infrastructure) passed on `31813ea`, the zero-spend restructuring (run 45112612575), as on every push since run 4.
 - Security: 5 independent review rounds. Every critical and high finding is fixed with a regression test; the residual risks are documented (`SECURITY.md`).
 - Dependency audit (`pip-audit`, including the Agent SDK extra): no known vulnerabilities.
 
