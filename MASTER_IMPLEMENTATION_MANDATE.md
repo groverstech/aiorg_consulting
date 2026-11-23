@@ -94,6 +94,7 @@ performs the act. [D: ADR-009]
 | Claude Agent SDK | [H §3], [V §2] | Integrated as a secured runtime (`WWOS_AGENT_RUNTIME=agent_sdk`), all safeguards preserved; production default stays the Messages API pending owner confirmation (OA-8). Evidence: `docs/AGENT_SDK_EVALUATION.md` [D: ADR-027] |
 | Google Cloud hosting | [H §3, §7], [V §3] | Cloud Run, Cloud SQL PostgreSQL 16, Secret Manager, Artifact Registry, Monitoring (`deploy/gcp`, not applied) |
 | **Zero spend** (owner instruction 2026-11-23) | Owner | Default profile: AI off ($0 budgets), rules engine, manual or own-mailbox e-mail, self-hosted on the owner's computer (`docs/ZERO_COST_GUIDE.md`, ADR-030). AI and GCP remain opt-in paid options |
+| **$20/month AI** (owner decision 2026-11-23) | Owner | Installation hard cap $20/month, paced over the month; department model tiers; prompt caching (`ZERO_COST_GUIDE.md`, ADR-031) |
 | Controlled expenditure | [A §6], [H §2A], [V §3] | AI: atomic per-call budget reservations (agent lineage + organisation hard caps). Cloud: fixed instance limits and an optional billing budget with alerts [D: ADR-017, ADR-029] |
 | Operational autonomy | [A §3, §10] | Durable queue, retries, self-healing, scheduled reviews, hourly QA scan |
 | Security, isolation, migrations, e-mail reliability | [A §4], [H §2, §4] | See `docs/SECURITY.md`, ADR-017 to ADR-019 |

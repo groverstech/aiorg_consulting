@@ -13,6 +13,7 @@ from datetime import datetime
 from sqlalchemy import select
 
 from .agents.runtime import find_agent
+from .config import get_settings
 from .db import system_session, tenant_session
 from .models import SystemStatus, Tenant, utcnow
 
@@ -41,6 +42,8 @@ JOBS = [
 
 
 def _period_key(period: str, now: datetime) -> str:
+    if period == "weekly":
+        return now.strftime("%G-W%V")  # ISO week: runs at the first tick of each week (Monday, UTC)
     return now.strftime("%Y-%m-%d") if period == "daily" else now.strftime("%Y-%m-%dT%H")
 
 
@@ -61,12 +64,14 @@ def tick(now: datetime | None = None) -> int:
                 _, new = enqueue(s, kind="workflow.daily_briefing", payload={"date": _period_key("daily", now)},
                                  idempotency_key=f"sched:daily-briefing:{_period_key('daily', now)}")
                 created += int(new)
+                cadence = get_settings().ai_review_cadence
                 for job in (JOBS if ai_enabled() else []):
                     agent = find_agent(s, role=job.role)
                     if agent is None:
                         continue
+                    period = "weekly" if cadence == "weekly" and job.period == "daily" else job.period
                     _, new = enqueue(s, kind="agent_run", agent_id=agent.id,
-                                     idempotency_key=f"sched:{job.name}:{_period_key(job.period, now)}",
+                                     idempotency_key=f"sched:{job.name}:{_period_key(period, now)}",
                                      payload={"instruction": job.instruction, "delegated_by": f"schedule:{job.name}"})
                     created += int(new)
         except Exception:  # noqa: BLE001

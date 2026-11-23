@@ -26,6 +26,11 @@ def main(argv: list[str] | None = None) -> int:
     t = sub.add_parser("create-tenant", help="create a tenant with departments and founding agents")
     t.add_argument("name")
     t.add_argument("--budget", default=None, help="monthly AI budget in USD")
+    ap = sub.add_parser("ai-plan", help="owner: set the monthly AI budget and each department's model "
+                        "(premium/standard/economy tiers); --dry-run only shows the plan")
+    ap.add_argument("--tenant", required=True, help="tenant name or id")
+    ap.add_argument("--budget", required=True, help="monthly AI budget in USD, e.g. 20")
+    ap.add_argument("--dry-run", action="store_true")
     k = sub.add_parser("create-key", help="issue an API key for a tenant")
     k.add_argument("tenant_id")
     k.add_argument("--name", default="key")
@@ -88,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
         db.init_db()
         tenant_id, key = create_tenant(args.name, args.budget)
         print(f"tenant_id={tenant_id}\nowner_api_key={key}\n(store this key now; it is not shown again)")
+    elif args.cmd == "ai-plan":
+        return _ai_plan(args)
     elif args.cmd == "create-key":
         from .bootstrap import create_api_key
 
@@ -129,6 +136,52 @@ def main(argv: list[str] | None = None) -> int:
         from .backup import restore
 
         print(restore(args.path))
+    return 0
+
+
+def _ai_plan(args) -> int:
+    from decimal import Decimal, InvalidOperation
+
+    from sqlalchemy import or_, select
+
+    from . import ai_plan
+    from .budget import BudgetExceeded, pace_limit
+    from .db import system_session, tenant_session
+    from .llm import ai_enabled
+    from .models import Tenant
+
+    try:
+        amount = Decimal(args.budget)
+    except InvalidOperation:
+        print("--budget must be a number", file=sys.stderr)
+        return 2
+    with system_session() as s:
+        row = s.scalars(select(Tenant).where(or_(Tenant.id == args.tenant, Tenant.name == args.tenant))).first()
+        tenant_id = row.id if row else None
+    if tenant_id is None:
+        print(f"no tenant {args.tenant!r}", file=sys.stderr)
+        return 2
+    if args.dry_run:
+        lines = ai_plan.plan_lines(amount)
+    else:
+        try:
+            with tenant_session(tenant_id) as s:
+                lines = ai_plan.apply(s, s.get(Tenant, tenant_id), amount)
+        except (ValueError, BudgetExceeded) as e:
+            print(f"not applied: {e}", file=sys.stderr)
+            return 1
+    print(f"{'Agent':28} {'Tier':9} {'Model':18} {'Budget':>8} {'~Runs/mo':>9}  Status")
+    for line in lines:
+        print(f"{line.name:28} {line.tier:9} {line.model:18} ${line.budget:>7} {line.runs_per_month:>9}  "
+              f"{line.status or ('planned' if args.dry_run else '')}")
+    allocated = sum((line.budget for line in lines), Decimal("0"))
+    print(f"Organisation budget ${amount}/month; founding agents ${allocated}; "
+          f"${amount - allocated} kept for specialist agents.")
+    paced = pace_limit(amount)
+    print("Spending pace: " + (f"on (up to ${paced:.2f} usable so far this month)" if paced is not None
+                               else "off (set WWOS_BUDGET_PACING_BURST_PCT to spread the budget over the month)"))
+    if not ai_enabled():
+        print("AI is off (WWOS_LLM_PROVIDER=none): nothing will be spent until you turn it on.")
     return 0
 
 

@@ -14,7 +14,7 @@ code-enforced gates; prompts are never the security boundary.
 | Agent permissions | Tool allow-list per agent; strict schema validation of every model-supplied argument (no unknown keys, types checked, amounts finite/positive); tools not offered are never executed |
 | Privilege containment | Agents grant only tools they hold; only the owner creates/revises/suspends provisioning-capable agents; founding role names reserved; owner-set budgets only raised by the owner |
 | Owner authority | Transfers, signatures, filings, budget increases, irreversible purges, partner disclosures (always) and client e-mail (by policy) become approval requests with a content preview; approved actions re-validate before executing |
-| Budget | Atomic per-call reservations (PostgreSQL row lock), per-agent-lineage and organisation hard limits, ledger written exactly once |
+| Budget | Atomic per-call reservations (PostgreSQL row lock), per-agent-lineage and organisation hard limits, ledger written exactly once. Optional installation hard cap (`WWOS_HARD_MONTHLY_CAP_USD`, environment-only, advisory lock across tenants; approvals cannot exceed it) and spending pacing (ADR-031) |
 | Confidentiality | Partner briefs only from the anonymiser (reserved kind), normalised-fingerprint leak check, NDA attested by owner, re-checked at send |
 | Prompt injection | Untrusted text (CRM fields, lead text, tool results, error text) cannot trigger privileged actions: privileged actions are gated in code; recovery prompts fence error text as data |
 | Secrets | Never in the repository or Terraform variables; Secret Manager in GCP; DB URL assembled at runtime from the socket path and a secret |

@@ -38,6 +38,9 @@ class LLMResult:
     output_tokens: int
     model: str
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    # Prompt-cache usage (billed at 1.25x / 0.1x of the input price); input_tokens excludes these.
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
 
     @property
     def text(self) -> str:
@@ -81,6 +84,10 @@ class OfflineProvider:
                          input_tokens=in_tokens, output_tokens=len(text) // 4 + 1, model="offline")
 
 
+# Thinking effort per model: the economy model does routine work at low effort; everything else medium.
+EFFORT_BY_MODEL = {"claude-haiku-5-5": "low"}
+
+
 class AnthropicProvider:
     name = "anthropic"
 
@@ -98,7 +105,10 @@ class AnthropicProvider:
             "max_tokens": max_tokens,
             "system": system,
             "messages": messages,
-            "output_config": {"effort": "medium"},
+            "output_config": {"effort": EFFORT_BY_MODEL.get(model, "medium")},
+            # Automatic prompt caching: each turn of an agent run re-reads the system prompt, tool
+            # definitions and earlier turns from cache at 0.1x the input price instead of paying full price.
+            "cache_control": {"type": "ephemeral"},
         }
         if tools:
             kwargs["tools"] = tools
@@ -124,9 +134,12 @@ class AnthropicProvider:
             raise PermanentLLMError(f"model declined the request (category={category})")
         blocks = [b.to_dict() for b in resp.content]
         calls = [b for b in blocks if b.get("type") == "tool_use"]
+        usage = resp.usage
         return LLMResult(content=blocks, stop_reason=resp.stop_reason or "end_turn",
-                         input_tokens=resp.usage.input_tokens, output_tokens=resp.usage.output_tokens,
-                         model=resp.model, tool_calls=calls)
+                         input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+                         model=resp.model, tool_calls=calls,
+                         cache_write_tokens=getattr(usage, "cache_creation_input_tokens", None) or 0,
+                         cache_read_tokens=getattr(usage, "cache_read_input_tokens", None) or 0)
 
 
 _provider_override: LLMProvider | None = None

@@ -215,7 +215,7 @@ def run_agent_prompt_sdk(s: Session, tenant: Tenant, agent: Agent, prompt: str, 
         shutil.rmtree(workdir, ignore_errors=True)
         shutil.rmtree(config_dir, ignore_errors=True)
     if run.refused:
-        raise BudgetExceeded(run.refused)
+        raise run.refused_error or BudgetExceeded(run.refused)
     if run.upstream_status in (429, 500, 502, 503, 529):
         raise TransientLLMError(f"model API unavailable (HTTP {run.upstream_status})")
     if error is not None:

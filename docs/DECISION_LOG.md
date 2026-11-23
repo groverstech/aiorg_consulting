@@ -192,3 +192,27 @@ and Cloud SQL has no free tier. The GCP Terraform remains as a paid option.
 
 AI-only features (objectives, agent tasks) refuse clearly. Internally queued AI work is marked `skipped`.
 The production check refuses the `offline` simulator, because it would fake agent work.
+
+### ADR-031: The $20/month AI plan (owner decision 2026-11-23)
+The owner allows up to $20 for AI. Hosting, e-mail and the rules engine stay at $0 (ADR-030); the whole
+$20 goes to Claude. Decisions:
+- **Installation hard cap.** `WWOS_HARD_MONTHLY_CAP_USD` caps monthly AI spend across every tenant.
+  - It is checked in the same atomic reservation as the organisation and agent limits.
+  - On PostgreSQL it is serialised by a transaction-scoped advisory lock taken before the tenant lock.
+  - Completing a reservation (spill) now takes the same locks, so a check never sees half of a spill.
+  - A budget-increase approval or `ai-plan` above the cap is refused. Only the server configuration can change it.
+- **Pacing.** With `WWOS_BUDGET_PACING_BURST_PCT`, cumulative spend may reach budget × day/days-in-month +
+  the burst. A refusal is a `PaceDeferred` budget refusal: the task is requeued for the next UTC midnight
+  without using a retry attempt and without counting as an agent failure. Pacing is off unless set.
+- **Model tiers by department** (`wwos ai-plan`). Opus 5.5 is used where judgement or client-facing text
+  matters (CEO, Sales, Delivery, Legal), Sonnet 5.5 for internal analysis (Technology, QA, Marketing,
+  specialists), and Haiku 5.5 at low effort for routine checks (Operations, Finance). Applied as new,
+  tested agent versions by the owner. A single-model design at low effort was the alternative; it was
+  rejected because Haiku is ~40× cheaper than Opus for the routine half of the work, while the client-facing
+  half keeps the best model.
+- **Prompt caching** (automatic, 5-minute entries) in the Messages runtime. The ledger prices cache writes at
+  1.25× and reads at 0.1× of the input price. The worst-case estimate (prompt chars / 3) still covers a full
+  cache write. The Agent SDK proxy keeps its more conservative pricing.
+- **Weekly AI reviews** (`WWOS_AI_REVIEW_CADENCE=weekly`); the free briefing stays daily.
+- **Fix:** the production check required positive budget ceilings, so the zero-cost profile (AI off, $0)
+  would not have started. $0 ceilings are now accepted when AI is off. A test now loads the shipped profile files.

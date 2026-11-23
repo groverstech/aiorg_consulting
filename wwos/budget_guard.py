@@ -32,12 +32,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from . import db
-from .budget import BudgetExceeded, cost_of, month_start
+from .budget import BudgetExceeded, PaceDeferred, cost_of, month_start, next_day_start, pace_limit
 from .models import BudgetLock, BudgetReservation, CostEntry, Tenant, new_id, utcnow
 
 ACTIVE = ("reserved", "incurred")
@@ -63,16 +63,34 @@ class _Res:
         return self.actual if self.actual is not None else self.estimate
 
 
-def _committed(conn, tenant_id: str, agent_ids: list[str] | None = None) -> Decimal:
-    q = select(func.coalesce(func.sum(CostEntry.cost_usd), 0)).where(
-        CostEntry.tenant_id == tenant_id, CostEntry.created_at >= month_start())
+def _committed(conn, tenant_id: str | None, agent_ids: list[str] | None = None) -> Decimal:
+    """Ledger spend this month for a tenant (``None``: every tenant, for the installation cap)."""
+    q = select(func.coalesce(func.sum(CostEntry.cost_usd), 0)).where(CostEntry.created_at >= month_start())
+    if tenant_id is not None:
+        q = q.where(CostEntry.tenant_id == tenant_id)
     if agent_ids is not None:
         q = q.where(CostEntry.agent_id.in_(agent_ids))
     return Decimal(str(conn.execute(q).scalar_one()))
 
 
+def _hard_cap() -> Decimal | None:
+    from .config import get_settings
+
+    return get_settings().hard_monthly_cap_usd
+
+
+# Arbitrary constant key for the installation-wide advisory lock (PostgreSQL), taken before any tenant lock.
+INSTALLATION_LOCK_KEY = 7_461_001
+
+
 def _admit(*, org_budget: Decimal, agent_budget: Decimal, agent_name: str, committed_org: Decimal,
-           committed_agent: Decimal, active_org: Decimal, active_agent: Decimal, estimate: Decimal) -> None:
+           committed_agent: Decimal, active_org: Decimal, active_agent: Decimal, estimate: Decimal,
+           installation_spent: Decimal | None = None) -> None:
+    cap = _hard_cap()
+    if cap is not None and installation_spent is not None and installation_spent + estimate > cap:
+        raise BudgetExceeded(
+            f"installation hard cap ${cap}/month would be exceeded (spent and in flight across all "
+            f"organisations ${installation_spent:.4f}, call estimate ${estimate:.4f})")
     if committed_agent + active_agent + estimate > agent_budget:
         raise BudgetExceeded(
             f"agent {agent_name} budget ${agent_budget} would be exceeded (spent ${committed_agent:.4f}, "
@@ -81,6 +99,13 @@ def _admit(*, org_budget: Decimal, agent_budget: Decimal, agent_name: str, commi
         raise BudgetExceeded(
             f"organisation budget ${org_budget} would be exceeded (spent ${committed_org:.4f}, "
             f"in flight ${active_org:.4f}, call estimate ${estimate:.4f})")
+    now = utcnow()
+    paced = pace_limit(org_budget, now)
+    if paced is not None and committed_org + active_org + estimate > paced:
+        raise PaceDeferred(
+            f"spending pace: ${paced:.2f} of the ${org_budget} monthly budget is available so far this month "
+            f"(spent ${committed_org:.4f}, in flight ${active_org:.4f}, call estimate ${estimate:.4f}); "
+            "the work resumes tomorrow", retry_at=next_day_start(now))
 
 
 def _write_ledger(tenant_id: str, rows: list[_Res], conn=None) -> None:
@@ -125,20 +150,27 @@ class MemoryReservationStore:
                                                       .where(Tenant.id == tenant_id)).scalar_one()))
                 committed_org = _committed(conn, tenant_id)
                 committed_agent = _committed(conn, tenant_id, sorted(ids))
+                installation = None
+                if _hard_cap() is not None:
+                    installation = _committed(conn, None) + sum(
+                        (r.exposure for r in self._res.values() if r.status in ACTIVE and r.expires_at > now),
+                        Decimal("0"))
             _admit(org_budget=org_budget, agent_budget=agent_budget, agent_name=agent_name,
                    committed_org=committed_org, committed_agent=committed_agent,
                    active_org=sum((r.exposure for r in active), Decimal("0")),
                    active_agent=sum((r.exposure for r in active if r.agent_id in ids), Decimal("0")),
-                   estimate=estimate)
+                   estimate=estimate, installation_spent=installation)
             r = _Res(new_id(), tenant_id, agent_id, task_id, estimate)
             self._res[r.id] = r
             return r.id
 
-    def incur(self, rid, *, model, input_tokens, output_tokens) -> Decimal:
+    def incur(self, rid, *, model, input_tokens, output_tokens, cache_write_tokens=0,
+              cache_read_tokens=0) -> Decimal:
         with self._lock:
             r = self._res[rid]
-            r.model, r.input_tokens, r.output_tokens = model, input_tokens, output_tokens
-            r.actual = cost_of(model, input_tokens, output_tokens)
+            r.model, r.output_tokens = model, output_tokens
+            r.input_tokens = input_tokens + cache_write_tokens + cache_read_tokens  # all input, for reporting
+            r.actual = cost_of(model, input_tokens, output_tokens, cache_write_tokens, cache_read_tokens)
             r.status = "incurred"
             return r.actual
 
@@ -197,6 +229,9 @@ class SqlReservationStore:
         ids = sorted(set(lineage_ids or []) | {agent_id})
         now = utcnow()
         with db.write_transaction() as conn:
+            capped = _hard_cap() is not None
+            if capped:  # installation lock first, then the tenant lock: one global order, no deadlock
+                conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": INSTALLATION_LOCK_KEY})
             self._lock_tenant(conn, tenant_id)
             org_budget = Decimal(str(conn.execute(select(Tenant.monthly_budget_usd)
                                                   .where(Tenant.id == tenant_id)).scalar_one()))
@@ -206,20 +241,31 @@ class SqlReservationStore:
                 BudgetReservation.expires_at > now)
             active_org = Decimal(str(conn.execute(base).scalar_one()))
             active_agent = Decimal(str(conn.execute(base.where(BudgetReservation.agent_id.in_(ids))).scalar_one()))
+            installation = None
+            if capped:
+                every = select(func.coalesce(func.sum(exposure), 0)).where(
+                    BudgetReservation.status.in_(ACTIVE), BudgetReservation.expires_at > now)
+                # Read in-flight BEFORE the ledger (as for the tenant figures above): a spill committing in
+                # between is then counted twice (safe), never missed. The reverse order could miss it.
+                in_flight_all = Decimal(str(conn.execute(every).scalar_one()))
+                installation = in_flight_all + _committed(conn, None)
             _admit(org_budget=org_budget, agent_budget=agent_budget, agent_name=agent_name,
                    committed_org=_committed(conn, tenant_id), committed_agent=_committed(conn, tenant_id, ids),
-                   active_org=active_org, active_agent=active_agent, estimate=estimate)
+                   active_org=active_org, active_agent=active_agent, estimate=estimate,
+                   installation_spent=installation)
             rid = new_id()
             conn.execute(insert(BudgetReservation).values(
                 id=rid, tenant_id=tenant_id, agent_id=agent_id, task_id=task_id, estimate_usd=estimate,
                 status="reserved", created_at=now, expires_at=now + RESERVATION_TTL))
             return rid
 
-    def incur(self, rid, *, model, input_tokens, output_tokens) -> Decimal:
-        actual = cost_of(model, input_tokens, output_tokens)
+    def incur(self, rid, *, model, input_tokens, output_tokens, cache_write_tokens=0,
+              cache_read_tokens=0) -> Decimal:
+        actual = cost_of(model, input_tokens, output_tokens, cache_write_tokens, cache_read_tokens)
         with db.write_transaction() as conn:
             conn.execute(update(BudgetReservation).where(BudgetReservation.id == rid).values(
-                actual_usd=actual, model=model, input_tokens=input_tokens, output_tokens=output_tokens,
+                actual_usd=actual, model=model, input_tokens=input_tokens + cache_write_tokens + cache_read_tokens,
+                output_tokens=output_tokens,
                 status="incurred"))
         return actual
 
@@ -244,9 +290,15 @@ class SqlReservationStore:
         if not rids:
             return
         t = BudgetReservation.__table__
-        # One transaction: ledger rows + reservation status change commit atomically, so a concurrent
-        # reserve() sees either the active reservation or the ledger entry, never both or neither.
+        # One transaction: ledger rows + reservation status change commit atomically. It also takes the
+        # same locks as reserve() (installation lock first, then tenant locks in sorted order), so a
+        # reserve() never reads the two halves of a spill in between and sees each dollar exactly once.
         with db.write_transaction() as conn:
+            tenant_ids = sorted({tid for (tid,) in conn.execute(select(t.c.tenant_id).where(t.c.id.in_(rids)))})
+            if _hard_cap() is not None:
+                conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": INSTALLATION_LOCK_KEY})
+            for tid in tenant_ids:
+                self._lock_tenant(conn, tid)
             rows = conn.execute(select(t).where(t.c.id.in_(rids), t.c.status == "incurred")
                                 .with_for_update()).all()
             by_tenant: dict[str, list[_Res]] = {}

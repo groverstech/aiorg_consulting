@@ -251,7 +251,14 @@ def _submit_filing(ctx: ToolContext, filing: str, authority: str, summary: str =
 @tool("budget.request_increase", "Request an increase to the organisation's monthly AI budget (owner approval).",
       {"new_monthly_budget_usd": NUM, "justification": S}, ["new_monthly_budget_usd", "justification"])
 def _budget_increase(ctx: ToolContext, new_monthly_budget_usd, justification: str) -> dict:
+    from .config import get_settings
+
     new = Decimal(str(new_monthly_budget_usd))
+    cap = get_settings().hard_monthly_cap_usd
+    if cap is not None and new > cap:
+        # Runs at approval time too: the installation cap is set outside the app and cannot be approved away.
+        raise ValueError(f"${new} exceeds the installation hard cap of ${cap}/month (WWOS_HARD_MONTHLY_CAP_USD); "
+                         "only the server configuration can change it")
     old = ctx.tenant.monthly_budget_usd
     ctx.tenant.monthly_budget_usd = new
     return {"previous": str(old), "new": str(new)}
@@ -262,6 +269,10 @@ def _budget_status(ctx: ToolContext) -> dict:
     out = {"org_budget": str(ctx.tenant.monthly_budget_usd),
            "org_spent": f"{budget.spent_this_month(ctx.session):.4f}",
            "allocated_to_agents": str(budget.allocated_to_agents(ctx.session))}
+    pace = budget.pace_status(ctx.session, ctx.tenant)
+    if pace["pacing"]:  # spending is spread over the month: tell agents what they can use today
+        out.update(org_available_now=str(pace["available_now"]),
+                   pacing_note="Spend is paced across the month; work beyond today's allowance waits until tomorrow.")
     if ctx.agent:
         out.update(agent_budget=str(ctx.agent.monthly_budget_usd),
                    agent_spent=f"{budget.spent_this_month(ctx.session, ctx.agent.id):.4f}")

@@ -334,6 +334,13 @@ def process(task_id: str, tenant_id: str, token: str) -> str:
         if isinstance(error, AIDisabled):  # zero-spend mode: not a failure, nothing retried or penalised
             _finish(s, task_id, token, status="skipped", last_error=f"skipped: {error}"[:4000])
             return "skipped"
+        from .budget import PaceDeferred
+
+        if isinstance(error, PaceDeferred):  # today's budget share is used: postpone, do not fail or penalise
+            _finish(s, task_id, token, status="queued", last_error=f"deferred: {error}"[:4000],
+                    run_after=error.retry_at, attempts=max(task.attempts - 1, 0))
+            audit(s, "worker", "task.deferred", task_id, kind=task.kind, until=error.retry_at.isoformat())
+            return "deferred"
         last_error = f"{type(error).__name__}: {error}"[:4000]
         retryable = not isinstance(error, NON_RETRYABLE)
         if retryable and task.attempts < cfg.task_max_attempts:

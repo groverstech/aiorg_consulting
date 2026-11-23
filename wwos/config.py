@@ -54,6 +54,17 @@ class Settings:
     org_monthly_budget_usd: Decimal = field(
         default_factory=lambda: Decimal(_env("WWOS_ORG_MONTHLY_BUDGET_USD", "500"))
     )
+    # Installation-wide hard cap on AI spend per calendar month, across every tenant (unset = none).
+    # Set only in the environment, so no approval, dashboard action or agent can raise it.
+    hard_monthly_cap_usd: Decimal | None = field(default_factory=lambda: (
+        Decimal(_env("WWOS_HARD_MONTHLY_CAP_USD", "")) if _env("WWOS_HARD_MONTHLY_CAP_USD", "") else None))
+    # Spending pacing: unset = off. A number N spreads the monthly budget over the month: cumulative
+    # spend may reach budget x day/days_in_month + N% of the budget (unused allowance carries forward).
+    budget_pacing_burst_pct: Decimal | None = field(default_factory=lambda: (
+        Decimal(_env("WWOS_BUDGET_PACING_BURST_PCT", "")) if _env("WWOS_BUDGET_PACING_BURST_PCT", "") else None))
+    # Scheduled AI reviews (CEO review, operations check): "daily" or "weekly". The rules-based daily
+    # briefing runs every day regardless and costs nothing.
+    ai_review_cadence: str = field(default_factory=lambda: _env("WWOS_AI_REVIEW_CADENCE", "daily"))
     max_agents_per_tenant: int = field(default_factory=lambda: int(_env("WWOS_MAX_AGENTS_PER_TENANT", "40")))
     max_agent_budget_usd: Decimal = field(
         default_factory=lambda: Decimal(_env("WWOS_MAX_AGENT_BUDGET_USD", "100"))
@@ -130,8 +141,16 @@ def production_problems(cfg: Settings | None = None) -> list[str]:
                         "e-mails yourself) or 'smtp' in production")
     if cfg.admin_token and len(cfg.admin_token) < 32:
         problems.append("WWOS_ADMIN_TOKEN must be at least 32 characters (or empty to disable)")
-    if cfg.org_monthly_budget_usd <= 0 or cfg.max_agent_budget_usd <= 0:
-        problems.append("budget ceilings must be positive")
+    if cfg.org_monthly_budget_usd < 0 or cfg.max_agent_budget_usd < 0:
+        problems.append("budget ceilings cannot be negative")
+    elif cfg.llm_provider != "none" and (cfg.org_monthly_budget_usd <= 0 or cfg.max_agent_budget_usd <= 0):
+        problems.append("with AI on, WWOS_ORG_MONTHLY_BUDGET_USD and WWOS_MAX_AGENT_BUDGET_USD must be positive")
+    if cfg.budget_pacing_burst_pct is not None and not (0 <= cfg.budget_pacing_burst_pct <= 100):
+        problems.append("WWOS_BUDGET_PACING_BURST_PCT must be between 0 and 100 (or unset to turn pacing off)")
+    if cfg.hard_monthly_cap_usd is not None and cfg.hard_monthly_cap_usd < 0:
+        problems.append("WWOS_HARD_MONTHLY_CAP_USD cannot be negative")
+    if cfg.ai_review_cadence not in ("daily", "weekly"):
+        problems.append("WWOS_AI_REVIEW_CADENCE must be 'daily' or 'weekly'")
     return problems
 
 

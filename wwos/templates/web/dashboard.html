@@ -5,7 +5,7 @@
 <div class="grid">
  <div class="card kpi"><div class="l">AI spend this month</div><div class="v">{{ spent|money }}</div>
   <div class="bar"><div style="width:{{ [budget_pct,100]|min }}%"></div></div>
-  <div class="l">of {{ tenant.monthly_budget_usd|money }} budget · {{ allocated|money }} allocated to agents</div></div>
+  <div class="l">of {{ tenant.monthly_budget_usd|money }} budget · {{ allocated|money }} allocated to agents{% if pace.pacing %} · {{ pace.available_now|money }} usable today (paced){% endif %}</div></div>
  <div class="card kpi"><div class="l">Active agents</div><div class="v">{{ agents|selectattr("a.status","equalto","active")|list|length }}</div><div class="l">{{ agents|length }} live in total</div></div>
  <div class="card kpi"><div class="l">Pending owner approvals</div><div class="v">{{ approvals|length }}</div></div>
  <div class="card kpi"><div class="l">Tasks</div><div class="v">{{ task_counts.get("queued",0) + task_counts.get("running",0) }}</div><div class="l">in flight · {{ task_counts.get("dead",0) }} dead-lettered</div></div>

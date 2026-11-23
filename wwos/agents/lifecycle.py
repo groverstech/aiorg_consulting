@@ -18,7 +18,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..budget import ALLOWED_MODELS, allocated_to_agents
+from ..budget import ALLOWED_MODELS, PaceDeferred, allocated_to_agents
 from ..config import get_settings
 from ..models import Agent, Department, Tenant
 from ..policy import PROVISIONING_TOOLS, audit
@@ -113,8 +113,10 @@ def acceptance_test(s: Session, tenant: Tenant, agent: Agent, trace=None) -> tup
         result = run_agent_prompt(
             s, tenant, agent,
             "Acceptance check: in one sentence, state your role and the first thing you would do.",
-            max_tokens=400, allow_tools=False, trace=trace,
+            max_tokens=1024, allow_tools=False, trace=trace,  # room for thinking + one sentence
         )
+    except PaceDeferred:
+        raise  # out of today's budget share: no verdict yet (the caller's work is postponed, not failed)
     except Exception as e:  # noqa: BLE001 - any failure fails the test
         return False, f"smoke test failed: {e}"
     finally:

@@ -28,6 +28,9 @@ Defaults: SQLite (`var/wwos.db`, single process only), offline model (no spend),
 | `WWOS_ANTHROPIC_UPSTREAM` | `https://api.anthropic.com` | Where the Agent SDK budget proxy forwards model calls |
 | `WWOS_ORG_MONTHLY_BUDGET_USD` | `500` | Default monthly AI budget for new tenants |
 | `WWOS_MAX_AGENT_BUDGET_USD` | `100` | Per-agent monthly ceiling |
+| `WWOS_HARD_MONTHLY_CAP_USD` | unset (no cap) | Installation-wide monthly AI spend cap across all tenants; nothing in the app can raise it ($20 plan: `20`) |
+| `WWOS_BUDGET_PACING_BURST_PCT` | unset (off) | Spreads the budget over the month: spend may reach budget × day/days + this % of the budget; excess work waits until tomorrow ($20 plan: `25`) |
+| `WWOS_AI_REVIEW_CADENCE` | `daily` | Scheduled CEO and operations AI reviews: `daily` or `weekly` ($20 plan: `weekly`); the free briefing is always daily |
 | `WWOS_MAX_AGENTS_PER_TENANT` | `40` | Live agent headcount ceiling |
 | `WWOS_AGENT_FAILURE_SUSPEND_THRESHOLD` | `3` | Consecutive failures before auto-suspension |
 | `WWOS_EXTERNAL_EMAIL_REQUIRES_APPROVAL` | `true` | Owner policy gate on client e-mail (partner mail is always gated) |

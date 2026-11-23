@@ -42,6 +42,7 @@ class RunBudget:
     reservations: list[str] = field(default_factory=list)
     spend: list[tuple[str, int, int, str]] = field(default_factory=list)  # (model, in, out, reservation)
     refused: str | None = None
+    refused_error: BudgetExceeded | None = None  # re-raised as-is (keeps PaceDeferred's retry time)
     upstream_status: int | None = None
     calls: int = 0
     count_calls: int = 0
@@ -220,6 +221,7 @@ class _Handler(BaseHTTPRequestHandler):
         except BudgetExceeded as e:
             with run.lock:
                 run.refused = str(e)
+                run.refused_error = e
             self._error(400, f"WWOS budget refused this call: {e}")
             return
         with run.lock:

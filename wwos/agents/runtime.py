@@ -148,8 +148,11 @@ def run_agent_prompt(s: Session, tenant: Tenant, agent: Agent, prompt: str, *, m
             guard.release(rid)  # nothing billed (errors are raised before a response is produced)
             raise
         billed_model = _price_model(agent.model, result.model)
-        guard.incur(rid, model=billed_model, input_tokens=result.input_tokens, output_tokens=result.output_tokens)
-        trace.spend.append(SpendRecord(agent.id, task_id, billed_model, result.input_tokens,
+        cache_w = getattr(result, "cache_write_tokens", 0) or 0
+        cache_r = getattr(result, "cache_read_tokens", 0) or 0
+        guard.incur(rid, model=billed_model, input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+                    cache_write_tokens=cache_w, cache_read_tokens=cache_r)
+        trace.spend.append(SpendRecord(agent.id, task_id, billed_model, result.input_tokens + cache_w + cache_r,
                                        result.output_tokens, reservation_id=rid))
         messages.append({"role": "assistant", "content": result.content})
         if result.stop_reason != "tool_use" or not result.tool_calls or not allow_tools:

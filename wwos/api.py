@@ -575,7 +575,9 @@ def budget_status(s: Session = Depends(viewer_session)) -> dict:
     tenant = lifecycle.tenant_of(s)
     return {"monthly_budget_usd": str(tenant.monthly_budget_usd),
             "spent_this_month_usd": f"{budget.spent_this_month(s):.4f}",
-            "allocated_to_agents_usd": str(budget.allocated_to_agents(s))}
+            "allocated_to_agents_usd": str(budget.allocated_to_agents(s)),
+            **{("pacing" if k == "pacing" else f"{k}_usd"): (v if k == "pacing" else str(v))
+               for k, v in budget.pace_status(s, tenant).items()}}
 
 
 @app.get("/api/audit")
@@ -633,6 +635,7 @@ def dashboard_data(s: Session) -> dict:
                                       .order_by(OutboundMessage.created_at))),
         "briefing": s.scalars(select(Document).where(Document.kind == "briefing")
                               .order_by(Document.created_at.desc())).first(),
+        "pace": budget.pace_status(s, tenant),
         "ai_on": __import__("wwos.llm", fromlist=["ai_enabled"]).ai_enabled(),
     }
 

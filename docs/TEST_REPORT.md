@@ -1,12 +1,12 @@
 # Test report
 
-_Run on 2026-11-23 against the zero-spend restructuring (branch `claude/peaceful-ride-6fjetj`). Re-run with the
+_Run on 2026-11-23 against the $20 plan (branch `claude/peaceful-ride-6fjetj`). Re-run with the
 commands at the end. CI runs the same suite on every push (see "CI" below)._
 
 ## Result
 
-**208 passed, 0 failed, 0 skipped** (SQLite + PostgreSQL 16 + headless Chromium + the real Claude Code
-CLI from `claude-agent-sdk` 0.2.187 against a local fake API). Without `WWOS_TEST_PG_URL` the 12
+**225 passed, 0 failed, 0 skipped** (SQLite + PostgreSQL 16 + headless Chromium + the real Claude Code
+CLI from `claude-agent-sdk` 0.2.187 against a local fake API). Without `WWOS_TEST_PG_URL` the 14
 PostgreSQL tests are skipped; without the `agent-sdk` extra the 13 Agent SDK tests are skipped.
 
 The two race tests (`test_memory_store_thread_race_respects_budget`, PostgreSQL
@@ -40,6 +40,7 @@ incurred and no real person was contacted.
 | Agent SDK runtime | `test_agent_sdk_runtime.py` (13), `test_review_round5.py` (8) | built-ins absent; only gated tools; approval gates; per-call budget refusal before the model is called; clamped `max_tokens`; real key never given to the CLI; canary proves no inherited env reaches the model; no orphan CLI after SIGKILL (mutation-checked); no temp files left; broken streams still recorded |
 | Partner acquisition (CA/CS, international) | `test_partner_acquisition_outreach_is_owner_approved_and_prospects_get_no_work`, `test_ca_cs_categories_only_for_indian_partners`, round-5 partner tests | agents cannot confirm; outreach owner-approved; no work to prospects; shadowing/inactive blocked; client identity refused in partner mail |
 | Zero-spend mode | `test_zero_spend.py` (10) | every model provider booby-trapped; $0 tenant; full lead → proposal → approval → manual e-mail → won → SOW cycle; daily briefing and weekly follow-up de-duplication; AI-only features refuse; skipped (not failed) AI work; a live provider on $0 budgets cannot spend; e-mail daily cap; production profile rules |
+| $20 plan | `test_low_cost_plan.py` (15), PostgreSQL cap and pacing tests | a paced department delays a CEO objective instead of failing it (mutation-checked); model tiers applied as tested versions within budget; installation hard cap across tenants (24 concurrent workers on PostgreSQL, 30/30 runs; with the lock removed the test caught overspend); approved increases above the cap refused; pacing defers work to tomorrow without failing or penalising agents; a simulated month never passes the pace or $20 yet uses the allocated budget; cache tokens priced (1.25× write, 0.1× read); provider sends `cache_control` and low effort for Haiku; weekly AI reviews; shipped profile files pass production checks |
 | Client delivery | `test_won_deal_hands_off_to_delivery_without_inventing_terms` | won → SOW draft → owner signature request → planning task; no invented terms or invoices |
 | Confidentiality | `test_partner_confidentiality.py` (21) | obfuscation attempts, forged briefs, NDA withdrawal after approval, sub-domains, previews |
 | Production configuration | `test_production_config.py`, `test_deploy_support.py` | unsafe settings refused, Cloud SQL socket URL, structured logs, worker health |

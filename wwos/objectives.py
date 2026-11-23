@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from . import crm, documents
 from .agents.runtime import RunTrace, find_agent, run_agent_prompt
+from .budget import PaceDeferred
 from .models import (Agent, CostEntry, Deal, Department, Objective, ObjectiveTask, Task, Tenant, utcnow)
 from .policy import audit
 
@@ -200,6 +201,8 @@ def run(s: Session, tenant: Tenant, task: Task, trace: RunTrace) -> dict:
     try:
         with s.begin_nested():
             result = run_agent_prompt(s, tenant, agent, prompt, task_id=task.id, trace=trace)
+    except PaceDeferred:
+        raise  # today's budget share is used: the worker postpones this step; it is not a failed attempt
     except Exception as e:  # noqa: BLE001 - the coordinator decides what happens next
         _handle_failure(s, t, f"{type(e).__name__}: {e}"[:500])
         return {"status": t.status}
@@ -229,6 +232,8 @@ def qa(s: Session, tenant: Tenant, task: Task, trace: RunTrace) -> dict:
         try:
             with s.begin_nested():
                 run_agent_prompt(s, tenant, auditor, prompt, task_id=task.id, trace=trace)
+        except PaceDeferred:
+            raise  # review tomorrow rather than record a failed verdict
         except Exception as e:  # noqa: BLE001
             t.qa_verdict, t.qa_notes = "fail", f"QA review could not be completed: {type(e).__name__}"
         if t.qa_verdict is None:

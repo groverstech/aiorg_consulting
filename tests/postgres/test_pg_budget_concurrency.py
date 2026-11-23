@@ -136,3 +136,46 @@ def test_rollback_after_spend_still_records_once(pg, tenant, scripted):
             raise RuntimeError("business failure after the model call")
     assert _ledger(tid) == Decimal("0.024")
     assert budget_guard.store().active_count() == 0
+
+
+def test_installation_hard_cap_holds_across_tenants_under_concurrency(pg, monkeypatch):
+    """24 threads across two tenants, each tenant with $10 of budget, under a $7 installation cap."""
+    from wwos.bootstrap import create_tenant
+
+    monkeypatch.setenv("WWOS_HARD_MONTHLY_CAP_USD", "7")
+    tenants = [create_tenant(n, "10", with_agents=False)[0] for n in ("Cap A", "Cap B")]
+    guard = budget_guard.store()
+    barrier = threading.Barrier(24)
+
+    def attempt(i):
+        barrier.wait()
+        try:
+            rid = guard.reserve(tenant_id=tenants[i % 2], agent_id=f"agent-{i % 4}", agent_name="x",
+                                agent_budget=Decimal("100"), task_id=None, estimate=Decimal("1"))
+            guard.incur(rid, model="claude-opus-5-5", input_tokens=0, output_tokens=50_000)  # $1.00
+            guard.spill([rid])
+            return True
+        except BudgetExceeded:
+            return False
+
+    with ThreadPoolExecutor(24) as ex:
+        results = list(ex.map(attempt, range(24)))
+    assert sum(results) == 7
+    assert _ledger(tenants[0]) + _ledger(tenants[1]) == Decimal("7")
+
+
+def test_pacing_defers_on_postgres(pg, monkeypatch):
+    from wwos.budget import PaceDeferred
+    from wwos.bootstrap import create_tenant
+
+    monkeypatch.setenv("WWOS_BUDGET_PACING_BURST_PCT", "0")
+    tid, _ = create_tenant("Paced Co", "30", with_agents=False)
+    monkeypatch.setattr(budget_guard, "pace_limit", lambda b, now=None: Decimal("2"))
+    guard = budget_guard.store()
+    held = [guard.reserve(tenant_id=tid, agent_id="a", agent_name="x", agent_budget=Decimal("100"), task_id=None,
+                          estimate=Decimal("1")) for _ in range(2)]
+    with pytest.raises(PaceDeferred):
+        guard.reserve(tenant_id=tid, agent_id="a", agent_name="x", agent_budget=Decimal("100"), task_id=None,
+                      estimate=Decimal("1"))
+    for r in held:
+        guard.release(r)
